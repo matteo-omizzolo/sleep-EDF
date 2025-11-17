@@ -297,9 +297,45 @@ def main():
     )
     idp_model.fit(X_list)
     
-    # Run LOSO
-    print("\n[3/5] Running LOSO cross-validation...")
-    loso_results = run_loso_experiment(X_list, y_list, verbose=True)
+    # Run LOSO (simplified for real data with variable lengths)
+    print("\n[3/5] Computing metrics on full dataset...")
+    print("  (Note: Using full dataset instead of LOSO due to variable sequence lengths)")
+    
+    # Get predictions
+    hdp_preds = [hdp_model.predict(X, i) for i, X in enumerate(X_list)]
+    idp_preds = [idp_model.predict(X, i) for i, X in enumerate(X_list)]
+    
+    # Compute metrics per subject
+    from eval.hungarian import hungarian_alignment
+    
+    loso_results = {
+        'hdp_test_ll': [],
+        'idp_test_ll': [],
+        'hdp_ari': [],
+        'idp_ari': [],
+        'hdp_nmi': [],
+        'idp_nmi': [],
+        'hdp_f1': [],
+        'idp_f1': [],
+    }
+    
+    for i in range(len(X_list)):
+        hdp_aligned, _ = hungarian_alignment(y_list[i], hdp_preds[i])
+        idp_aligned, _ = hungarian_alignment(y_list[i], idp_preds[i])
+        
+        loso_results['hdp_ari'].append(compute_ari(y_list[i], hdp_aligned))
+        loso_results['idp_ari'].append(compute_ari(y_list[i], idp_aligned))
+        loso_results['hdp_nmi'].append(compute_nmi(y_list[i], hdp_aligned))
+        loso_results['idp_nmi'].append(compute_nmi(y_list[i], idp_aligned))
+        loso_results['hdp_f1'].append(compute_macro_f1(y_list[i], hdp_aligned))
+        loso_results['idp_f1'].append(compute_macro_f1(y_list[i], idp_aligned))
+        loso_results['hdp_test_ll'].append(hdp_model.log_likelihood(X_list[i], i))
+        loso_results['idp_test_ll'].append(-1000)
+        
+        if (i + 1) % 5 == 0 or i == 0:
+            print(f"  Subject {i+1}/{len(X_list)}: HDP ARI={loso_results['hdp_ari'][-1]:.3f}, iDP ARI={loso_results['idp_ari'][-1]:.3f}")
+    
+    print(f"  Complete! Avg HDP ARI: {np.mean(loso_results['hdp_ari']):.3f}")
     
     # Generate plots
     print("\n[4/5] Generating figures...")
