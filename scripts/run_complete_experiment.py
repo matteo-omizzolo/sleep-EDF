@@ -14,7 +14,10 @@ Usage:
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+# Add src to path
+src_path = Path(__file__).parent.parent / "src"
+sys.path.insert(0, str(src_path))
 
 import numpy as np
 import warnings

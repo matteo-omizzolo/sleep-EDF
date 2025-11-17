@@ -108,11 +108,11 @@ class SimpleStickyHDPHMM:
     def _forward_backward(
         self, X: np.ndarray, pi: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray, float]:
-        """Forward-backward algorithm."""
+        """Forward-backward algorithm (optimized)."""
         T = len(X)
         K = self.K_max
         
-        # Emission log-likelihoods
+        # Emission log-likelihoods (vectorized)
         log_B = np.zeros((T, K))
         for k in range(K):
             try:
@@ -122,32 +122,33 @@ class SimpleStickyHDPHMM:
             except:
                 log_B[:, k] = -1e10
         
-        # Forward
+        # Forward pass (vectorized)
+        log_pi = np.log(pi + 1e-10)
         log_alpha = np.zeros((T, K))
         log_alpha[0] = np.log(self.beta_ + 1e-10) + log_B[0]
         
         for t in range(1, T):
-            for k in range(K):
-                log_alpha[t, k] = logsumexp(
-                    log_alpha[t-1] + np.log(pi[:, k] + 1e-10)
-                ) + log_B[t, k]
+            # Vectorized computation
+            log_alpha[t] = logsumexp(log_alpha[t-1][:, None] + log_pi.T, axis=0) + log_B[t]
         
         log_likelihood = logsumexp(log_alpha[-1])
         
-        # Backward
+        # Backward pass (vectorized)
         log_beta_bw = np.zeros((T, K))
+        
         for t in range(T-2, -1, -1):
-            for k in range(K):
-                log_beta_bw[t, k] = logsumexp(
-                    np.log(pi[k, :] + 1e-10) + log_B[t+1] + log_beta_bw[t+1]
-                )
+            log_beta_bw[t] = logsumexp(log_pi + log_B[t+1] + log_beta_bw[t+1], axis=1)
         
         # Posteriors
         log_gamma = log_alpha + log_beta_bw
         log_gamma -= logsumexp(log_gamma, axis=1, keepdims=True)
-        gamma = np.exp(log_gamma)
+        gamma = np.exp(np.clip(log_gamma, -500, 500))
         
-        # Two-slice posteriors (for transition updates)
+        # Simplified xi computation
+        xi = np.zeros((T-1, K, K))
+        for t in range(T-1):
+            xi[t] = gamma[t][:, None] * pi * np.exp(log_B[t+1] + log_beta_bw[t+1])
+            xi[t] /= (xi[t].sum() + 1e-10)
         xi = np.zeros((T-1, K, K))
         for t in range(T-1):
             for j in range(K):
@@ -169,12 +170,29 @@ class SimpleStickyHDPHMM:
         states = np.zeros(T, dtype=int)
         
         # Sample last state
-        states[-1] = self.rng.choice(self.K_max, p=gamma[-1])
+        p_last = gamma[-1]
+        p_last = p_last / p_last.sum()  # Normalize
+        states[-1] = self.rng.choice(self.K_max, p=p_last)
         
         # Sample backward
         for t in range(T-2, -1, -1):
             trans_prob = xi[t, :, states[t+1]]
-            trans_prob = trans_prob / (trans_prob.sum() + 1e-10)
+            prob_sum = trans_prob.sum()
+            
+            # Handle numerical issues
+            if prob_sum < 1e-10 or not np.isfinite(prob_sum):
+                # Fallback to marginal
+                trans_prob = gamma[t]
+            
+            # Normalize carefully
+            trans_prob = np.maximum(trans_prob, 0)  # Ensure non-negative
+            prob_sum = trans_prob.sum()
+            if prob_sum > 1e-10:
+                trans_prob = trans_prob / prob_sum
+            else:
+                # Uniform fallback
+                trans_prob = np.ones(self.K_max) / self.K_max
+            
             states[t] = self.rng.choice(self.K_max, p=trans_prob)
         
         return states
@@ -191,12 +209,14 @@ class SimpleStickyHDPHMM:
             # Collect data assigned to state k
             X_k = []
             for X, states in zip(X_list, states_list):
-                X_k.append(X[states == k])
+                mask = states == k
+                if mask.any():
+                    X_k.append(X[mask])
             
             if len(X_k) > 0:
-                X_k = np.vstack([x for x in X_k if len(x) > 0])
+                X_k = np.vstack(X_k)
             
-            if len(X_k) > 0:
+            if len(X_k) > 1:  # Need at least 2 points for covariance
                 n_k = len(X_k)
                 x_bar = X_k.mean(axis=0)
                 
@@ -263,15 +283,14 @@ class SimpleStickyHDPHMM:
             for m in range(self.M):
                 states_list[m] = self._sample_states(X_list[m], self.pi_[m])
             
-            # M-step: Update parameters
-            self._update_emissions(X_list, states_list)
-            self._update_transitions(states_list)
+            # M-step: Update parameters (every 5 iterations to speed up)
+            if iter_idx % 5 == 0:
+                self._update_emissions(X_list, states_list)
+                self._update_transitions(states_list)
+                self.beta_ = self._sample_beta()
             
-            # Update beta (simplified - just resample)
-            self.beta_ = self._sample_beta()
-            
-            # Save sample
-            if iter_idx >= self.burn_in:
+            # Save sample (less frequently)
+            if iter_idx >= self.burn_in and (iter_idx - self.burn_in) % 10 == 0:
                 K_active = len(np.unique(np.concatenate(states_list)))
                 self.samples_.append({
                     'beta': self.beta_.copy(),
@@ -282,7 +301,7 @@ class SimpleStickyHDPHMM:
                     'K': K_active,
                 })
             
-            if self.verbose and (iter_idx + 1) % 50 == 0:
+            if self.verbose and (iter_idx + 1) % 20 == 0:
                 K_active = len(np.unique(np.concatenate(states_list)))
                 print(f"  Iteration {iter_idx + 1}/{self.n_iter}, K={K_active}")
         
