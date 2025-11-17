@@ -184,16 +184,26 @@ def load_sleep_edf_dataset(
     
     for psg_file in psg_files:
         # Find corresponding hypnogram (PSG: SC4001E0-PSG.edf -> Hypno: SC4001EC-Hypnogram.edf)
-        subject_id = psg_file.stem.replace('-PSG', '').replace('E0', 'EC')
-        hypno_file = psg_file.parent / f"{subject_id}-Hypnogram.edf"
+        # Hypnogram suffixes vary: EC, EH, EJ, EP, EU, EV, etc.
+        subject_base = psg_file.stem.replace('-PSG', '').replace('E0', '')  # e.g., SC4001
         
-        if not hypno_file.exists():
+        # Try common hypnogram suffixes
+        possible_suffixes = ['EC', 'EH', 'EJ', 'EP', 'EU', 'EV', 'EA', 'EM', 'EW', 'EG']
+        hypno_file = None
+        
+        for suffix in possible_suffixes:
+            candidate = psg_file.parent / f"{subject_base}{suffix}-Hypnogram.edf"
+            if candidate.exists():
+                hypno_file = candidate
+                break
+        
+        if not hypno_file or not hypno_file.exists():
             if verbose:
-                print(f"  Warning: No hypnogram for {subject_id}, skipping")
+                print(f"  Warning: No hypnogram for {psg_file.stem}, skipping")
             continue
         
         if verbose:
-            print(f"  Loading {subject_id}...")
+            print(f"  Loading {psg_file.stem.replace('-PSG', '')}...")
         
         try:
             X, y = load_sleep_edf_subject(psg_file, hypno_file)
