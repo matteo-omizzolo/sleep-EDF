@@ -157,7 +157,8 @@ def compute_spectral_features(
 def load_sleep_edf_dataset(
     data_dir: Path,
     n_subjects: int = None,
-    verbose: bool = True
+    verbose: bool = True,
+    use_cache: bool = True
 ) -> Tuple[List[np.ndarray], List[np.ndarray]]:
     """
     Load multiple subjects from Sleep-EDF dataset.
@@ -166,12 +167,27 @@ def load_sleep_edf_dataset(
         data_dir: Path to data/raw/sleep-cassette directory
         n_subjects: Number of subjects to load (None = all available)
         verbose: Print progress
+        use_cache: Use cached preprocessed features if available
     
     Returns:
         X_list: List of feature arrays, one per subject
         y_list: List of label arrays, one per subject
     """
     data_dir = Path(data_dir)
+    
+    # Check for cached data
+    cache_dir = data_dir.parent.parent / 'processed'
+    cache_file = cache_dir / f'sleep_edf_cache_{n_subjects}subj.npz'
+    
+    if use_cache and cache_file.exists():
+        if verbose:
+            print(f"  Loading cached data from {cache_file.name}...")
+        data = np.load(cache_file, allow_pickle=True)
+        X_list = list(data['X_list'])
+        y_list = list(data['y_list'])
+        if verbose:
+            print(f"  Loaded {len(X_list)} subjects from cache")
+        return X_list, y_list
     
     # Find all PSG files
     psg_files = sorted(data_dir.glob('*-PSG.edf'))
@@ -218,6 +234,13 @@ def load_sleep_edf_dataset(
         print(f"  Loaded {len(X_list)} subjects")
         print(f"  Avg epochs per subject: {np.mean([len(X) for X in X_list]):.0f}")
         print(f"  Features per epoch: {X_list[0].shape[1]}")
+    
+    # Save to cache
+    if use_cache:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        if verbose:
+            print(f"  Saving to cache: {cache_file.name}...")
+        np.savez_compressed(cache_file, X_list=X_list, y_list=y_list)
     
     return X_list, y_list
 
