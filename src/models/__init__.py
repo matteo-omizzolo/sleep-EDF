@@ -1,6 +1,5 @@
-"""Model implementations module."""
+"""HDP-HMM models for sleep staging."""
 
-from .base import BaseHMM
-from .hdp_hmm_sticky import StickyHDPHMM
+from .simple_hdp_hmm import SimpleStickyHDPHMM
 
-__all__ = ["BaseHMM", "StickyHDPHMM"]
+__all__ = ['SimpleStickyHDPHMM']

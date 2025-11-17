@@ -1,6 +1,5 @@
-"""Data loading and preprocessing module."""
+"""Data loading utilities for Sleep-EDF dataset."""
 
-from .loader import load_sleep_edf, load_hypnogram
-from .preprocessing import extract_features, preprocess_subject
+from .load_sleep_edf import load_sleep_edf_dataset, load_sleep_edf_subject
 
-__all__ = ["load_sleep_edf", "load_hypnogram", "extract_features", "preprocess_subject"]
+__all__ = ['load_sleep_edf_dataset', 'load_sleep_edf_subject']
