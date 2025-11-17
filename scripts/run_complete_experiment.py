@@ -27,6 +27,7 @@ from models.simple_hdp_hmm import SimpleStickyHDPHMM
 from eval.metrics import compute_ari, compute_nmi, compute_macro_f1
 from eval.hungarian import fit_mapping_on_train_apply_to_test
 from eval import plots
+from data.load_sleep_edf import load_sleep_edf_dataset
 
 
 def generate_synthetic_sleep_data(
@@ -232,6 +233,7 @@ def main():
     parser.add_argument("--output", type=str, default="results/presentation", help="Output directory")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--quick", action="store_true", help="Quick mode (fewer iterations)")
+    parser.add_argument("--use-real-data", action="store_true", help="Use real Sleep-EDF dataset")
     
     args = parser.parse_args()
     
@@ -246,16 +248,27 @@ def main():
     print(f"Subjects: {args.n_subjects}")
     print(f"Epochs per subject: {args.n_epochs}")
     print(f"Output: {output_dir}")
+    print(f"Data source: {'Real Sleep-EDF' if args.use_real_data else 'Synthetic'}")
     print("="*80)
     
-    # Generate data
-    print("\n[1/5] Generating synthetic sleep data...")
-    X_list, y_list = generate_synthetic_sleep_data(
-        n_subjects=args.n_subjects,
-        n_epochs_per_subject=args.n_epochs,
-        random_state=args.seed
-    )
-    print(f"  Generated {len(X_list)} subjects, {X_list[0].shape[1]} features")
+    # Load or generate data
+    print("\n[1/5] Loading data...")
+    if args.use_real_data:
+        data_dir = Path(__file__).parent.parent / 'data' / 'raw' / 'sleep-cassette'
+        X_list, y_list = load_sleep_edf_dataset(
+            data_dir,
+            n_subjects=args.n_subjects,
+            verbose=True
+        )
+        print(f"  Loaded {len(X_list)} subjects from Sleep-EDF")
+    else:
+        print(f"  Generating synthetic sleep data...")
+        X_list, y_list = generate_synthetic_sleep_data(
+            n_subjects=args.n_subjects,
+            n_epochs_per_subject=args.n_epochs,
+            random_state=args.seed
+        )
+        print(f"  Generated {len(X_list)} subjects, {X_list[0].shape[1]} features")
     
     # Train models
     print("\n[2/5] Training models on all subjects...")
