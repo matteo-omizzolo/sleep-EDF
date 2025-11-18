@@ -467,9 +467,15 @@ def main():
     hdp_all_pred = np.concatenate(hdp_preds)
     idp_all_pred = np.concatenate(idp_preds)
     
-    # Per-class F1 for HDP
+    # Get unique classes in predictions and true labels
+    unique_true = np.unique(y_all_true)
+    unique_hdp = np.unique(hdp_all_pred)
+    unique_idp = np.unique(idp_all_pred)
+    
+    # Per-class F1 for HDP (use labels parameter to specify valid classes)
     hdp_report = classification_report(
         y_all_true, hdp_all_pred,
+        labels=list(range(5)),  # Only evaluate on 0-4 (W, N1, N2, N3, REM)
         target_names=['W', 'N1', 'N2', 'N3', 'REM'],
         output_dict=True,
         zero_division=0
@@ -479,6 +485,7 @@ def main():
     # Per-class F1 for iDP
     idp_report = classification_report(
         y_all_true, idp_all_pred,
+        labels=list(range(5)),  # Only evaluate on 0-4 (W, N1, N2, N3, REM)
         target_names=['W', 'N1', 'N2', 'N3', 'REM'],
         output_dict=True,
         zero_division=0
