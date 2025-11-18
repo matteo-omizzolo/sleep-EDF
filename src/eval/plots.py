@@ -428,12 +428,13 @@ def plot_kappa_ablation(
 
 def create_summary_table(
     results: Dict,
-    output_path: Optional[Path] = None
+    output_path: Optional[Path] = None,
+    per_class_results: Optional[Dict] = None
 ) -> str:
     """
     Table 1: Summary comparison table.
     
-    Returns formatted LaTeX/Markdown table.
+    Returns formatted LaTeX/Markdown table with optional per-class breakdown.
     """
     table = """
 | Model            | E[K]  | Median Dwell (s) | Test Log-Lik | ARI   | NMI   | Macro-F1 |
@@ -441,6 +442,22 @@ def create_summary_table(
 | iDP-HMM          | {idp_K:5.1f} | {idp_dwell:14.0f} | {idp_ll:11.1f} | {idp_ari:5.3f} | {idp_nmi:5.3f} | {idp_f1:8.3f} |
 | HDP-HMM (sticky) | {hdp_K:5.1f} | {hdp_dwell:14.0f} | {hdp_ll:11.1f} | {hdp_ari:5.3f} | {hdp_nmi:5.3f} | {hdp_f1:8.3f} |
 """.format(**results)
+    
+    # Add per-class F1 breakdown if available
+    if per_class_results:
+        table += "\n\nPer-Class F1 Scores (handling class imbalance):\n"
+        table += "| Model            | Wake  | N1    | N2    | N3    | REM   |\n"
+        table += "|------------------|-------|-------|-------|-------|-------|\n"
+        
+        if 'hdp_per_class' in per_class_results:
+            hdp_f1s = per_class_results['hdp_per_class']
+            table += f"| HDP-HMM (sticky) | {hdp_f1s.get('W', 0.0):5.3f} | {hdp_f1s.get('N1', 0.0):5.3f} | {hdp_f1s.get('N2', 0.0):5.3f} | {hdp_f1s.get('N3', 0.0):5.3f} | {hdp_f1s.get('REM', 0.0):5.3f} |\n"
+        
+        if 'idp_per_class' in per_class_results:
+            idp_f1s = per_class_results['idp_per_class']
+            table += f"| iDP-HMM          | {idp_f1s.get('W', 0.0):5.3f} | {idp_f1s.get('N1', 0.0):5.3f} | {idp_f1s.get('N2', 0.0):5.3f} | {idp_f1s.get('N3', 0.0):5.3f} | {idp_f1s.get('REM', 0.0):5.3f} |\n"
+        
+        table += "\nNote: Macro-F1 weights all classes equally (3% N1 = 68% Wake), addressing class imbalance.\n"
     
     if output_path:
         with open(output_path, 'w') as f:

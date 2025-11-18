@@ -44,18 +44,22 @@ def compute_cost_matrix(
 def hungarian_alignment(
     y_true: np.ndarray,
     y_pred: np.ndarray,
-    return_mapping: bool = True
+    return_mapping: bool = True,
+    allow_many_to_one: bool = True
 ) -> Tuple[np.ndarray, Dict[int, int]]:
     """
     Align predicted cluster labels to true labels using Hungarian algorithm.
     
     Finds optimal one-to-one mapping between predicted and true labels
-    that maximizes agreement.
+    that maximizes agreement. If allow_many_to_one=True, handles cases where
+    more predicted clusters than true classes by assigning extra clusters
+    to their most frequent true label (greedy many-to-one mapping).
     
     Args:
         y_true: True labels (n_epochs,)
         y_pred: Predicted labels (n_epochs,)
         return_mapping: Whether to return mapping dictionary
+        allow_many_to_one: If True, allow multiple predicted clusters to map to same true label
     
     Returns:
         y_pred_aligned: Aligned predicted labels (n_epochs,)
@@ -79,10 +83,24 @@ def hungarian_alignment(
         mapping[pred_label] = true_label
     
     # Handle unmatched predicted labels (if more predicted than true classes)
-    for pred_label in pred_labels:
-        if pred_label not in mapping:
-            # Assign to a dummy label (e.g., -1)
-            mapping[pred_label] = -1
+    if allow_many_to_one:
+        # For each unmapped predicted cluster, assign to most frequent true label
+        for pred_label in pred_labels:
+            if pred_label not in mapping:
+                # Find most common true label for this predicted cluster
+                mask = (y_pred == pred_label)
+                if np.sum(mask) > 0:
+                    true_counts = np.bincount(y_true[mask].astype(int))
+                    most_common_true = np.argmax(true_counts)
+                    mapping[pred_label] = most_common_true
+                else:
+                    # Fallback: assign to most frequent overall true label
+                    mapping[pred_label] = np.argmax(np.bincount(y_true.astype(int)))
+    else:
+        # Original behavior: assign to -1 (will be filtered out in metrics)
+        for pred_label in pred_labels:
+            if pred_label not in mapping:
+                mapping[pred_label] = -1
     
     # Apply mapping to get aligned labels
     y_pred_aligned = np.array([mapping.get(label, -1) for label in y_pred])

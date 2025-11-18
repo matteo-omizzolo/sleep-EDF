@@ -44,7 +44,8 @@ def load_sleep_edf_subject(
         # Fallback to any EEG channels
         available_channels = [ch for ch in raw.ch_names if 'EEG' in ch][:2]
     
-    raw.pick_channels(available_channels)
+    # Use new API to avoid legacy warning
+    raw.pick(available_channels)
     
     # Load hypnogram (sleep stage annotations)
     annot = mne.read_annotations(hypnogram_file)
@@ -61,47 +62,38 @@ def load_sleep_edf_subject(
         'Movement time': -1,     # Movement (will filter out)
     }
     
-    # Extract 30-second epochs
+    # Extract 30-second epochs (vectorized)
     epoch_duration = 30.0  # seconds
-    n_epochs = int(raw.times[-1] / epoch_duration)
-    sfreq = raw.info['sfreq']
+    sfreq = float(raw.info['sfreq'])
     samples_per_epoch = int(epoch_duration * sfreq)
-    
-    # Extract spectral features for each epoch
-    features_list = []
-    labels_list = []
-    
-    for i in range(n_epochs):
-        start_sample = i * samples_per_epoch
-        end_sample = start_sample + samples_per_epoch
-        
-        if end_sample > len(raw.times):
-            break
-        
-        # Get data for this epoch
-        epoch_data = raw.get_data(start=start_sample, stop=end_sample)
-        
-        # Compute spectral power features (simple frequency bands)
-        features = compute_spectral_features(epoch_data, sfreq)
-        
-        # Get corresponding sleep stage
-        epoch_time = i * epoch_duration
-        
-        # Find annotation at this time
-        stage_label = -1
+
+    full_data = raw.get_data()  # shape (n_channels, n_samples)
+    n_samples = full_data.shape[1]
+    n_epochs = n_samples // samples_per_epoch
+    if n_epochs == 0:
+        return np.empty((0, len(available_channels) * 5)), np.empty((0,), dtype=int)
+
+    trimmed = full_data[:, : n_epochs * samples_per_epoch]
+    epochs = trimmed.reshape(trimmed.shape[0], n_epochs, samples_per_epoch)
+
+    X_all = compute_spectral_features_batch(epochs, sfreq)
+
+    # Vectorized label assignment per epoch from annotations
+    y = np.full(n_epochs, -1, dtype=int)
+    if len(annot.onset) > 0:
         for onset, duration, desc in zip(annot.onset, annot.duration, annot.description):
-            if onset <= epoch_time < onset + duration:
-                if desc in stage_mapping:
-                    stage_label = stage_mapping[desc]
-                break
-        
-        if stage_label >= 0:  # Valid sleep stage
-            features_list.append(features)
-            labels_list.append(stage_label)
-    
-    X = np.array(features_list)
-    y = np.array(labels_list)
-    
+            code = stage_mapping.get(desc, -1)
+            if code < 0:
+                continue
+            start_idx = int(max(0, np.floor(onset / epoch_duration)))
+            end_idx = int(np.ceil((onset + duration) / epoch_duration))
+            if start_idx < n_epochs:
+                y[start_idx:min(end_idx, n_epochs)] = code
+
+    valid = y >= 0
+    X = X_all[valid]
+    y = y[valid]
+
     return X, y
 
 
@@ -154,11 +146,94 @@ def compute_spectral_features(
     return np.array(features)
 
 
+def compute_spectral_features_batch(
+    epochs: np.ndarray,
+    sfreq: float
+) -> np.ndarray:
+    """
+    Compute comprehensive spectral and temporal features for all epochs at once.
+    
+    Features include:
+    - Band powers (delta, theta, alpha, beta, gamma) - 5 per channel
+    - Spectral ratios (theta/alpha, alpha/delta) - 2 per channel  
+    - Temporal features (variance, mobility) - 2 per channel
+    Total: 9 features per channel
+
+    Args:
+        epochs: Array of shape (n_channels, n_epochs, n_samples)
+        sfreq: Sampling frequency
+
+    Returns:
+        X: Array of shape (n_epochs, n_channels * 9)
+    """
+    from scipy import signal
+
+    n_channels, n_epochs, n_samples = epochs.shape
+
+    bands = [
+        ('delta', 0.5, 4),
+        ('theta', 4, 8),
+        ('alpha', 8, 13),
+        ('beta', 13, 30),
+        ('gamma', 30, 50),
+    ]
+
+    # Welch PSD across the last axis (samples) for all channels and epochs
+    freqs, psd = signal.welch(epochs, sfreq, nperseg=min(256, n_samples), axis=-1)
+    # psd shape: (n_channels, n_epochs, n_freqs)
+
+    # Precompute band masks
+    masks = [(freqs >= low) & (freqs <= high) for _, low, high in bands]
+
+    # Compute band powers per (channel, epoch)
+    band_powers = []  # list of arrays shape (n_channels, n_epochs)
+    for mask in masks:
+        power = np.log(psd[..., mask].mean(axis=-1) + 1e-10)
+        band_powers.append(power)
+    
+    # Compute spectral ratios (important for sleep staging)
+    theta_power = band_powers[1]  # theta is index 1
+    alpha_power = band_powers[2]  # alpha is index 2
+    delta_power = band_powers[0]  # delta is index 0
+    
+    theta_alpha_ratio = theta_power / (alpha_power + 1e-10)
+    alpha_delta_ratio = alpha_power / (delta_power + 1e-10)
+    
+    # Compute temporal features (Hjorth parameters)
+    # Variance (activity)
+    variance = np.log(np.var(epochs, axis=-1) + 1e-10)  # (n_channels, n_epochs)
+    
+    # Mobility (measure of signal's mean frequency)
+    diff_data = np.diff(epochs, axis=-1)
+    mobility = np.sqrt(np.var(diff_data, axis=-1) / (np.var(epochs, axis=-1) + 1e-10))
+
+    # Assemble features with channel-major ordering:
+    # [ch0_features, ch1_features, ...]
+    features_per_epoch = []
+    for ch in range(n_channels):
+        ch_feats = np.stack([
+            band_powers[0][ch, :],  # delta
+            band_powers[1][ch, :],  # theta
+            band_powers[2][ch, :],  # alpha
+            band_powers[3][ch, :],  # beta
+            band_powers[4][ch, :],  # gamma
+            theta_alpha_ratio[ch, :],
+            alpha_delta_ratio[ch, :],
+            variance[ch, :],
+            mobility[ch, :],
+        ], axis=1)  # (n_epochs, 9)
+        features_per_epoch.append(ch_feats)
+
+    X = np.concatenate(features_per_epoch, axis=1)  # (n_epochs, n_channels*9)
+    return X
+
+
 def load_sleep_edf_dataset(
     data_dir: Path,
     n_subjects: int = None,
     verbose: bool = True,
-    use_cache: bool = True
+    use_cache: bool = True,
+    incremental_cache: bool = True,
 ) -> Tuple[List[np.ndarray], List[np.ndarray]]:
     """
     Load multiple subjects from Sleep-EDF dataset.
@@ -178,8 +253,9 @@ def load_sleep_edf_dataset(
     # Check for cached data
     cache_dir = data_dir.parent.parent / 'processed'
     cache_file = cache_dir / f'sleep_edf_cache_{n_subjects}subj.npz'
+    subj_cache_dir = cache_dir / 'sleep_edf_subjects'
     
-    if use_cache and cache_file.exists():
+    if use_cache and not incremental_cache and cache_file.exists():
         if verbose:
             print(f"  Loading cached data from {cache_file.name}...")
         data = np.load(cache_file, allow_pickle=True)
@@ -201,7 +277,8 @@ def load_sleep_edf_dataset(
     for psg_file in psg_files:
         # Find corresponding hypnogram (PSG: SC4001E0-PSG.edf -> Hypno: SC4001EC-Hypnogram.edf)
         # Hypnogram suffixes vary: EC, EH, EJ, EP, EU, EV, etc.
-        subject_base = psg_file.stem.replace('-PSG', '').replace('E0', '')  # e.g., SC4001
+        subject_id = psg_file.stem.replace('-PSG', '')        # e.g., SC4001E0
+        subject_base = subject_id.replace('E0', '')           # e.g., SC4001
         
         # Try common hypnogram suffixes
         possible_suffixes = ['EC', 'EH', 'EJ', 'EP', 'EU', 'EV', 'EA', 'EM', 'EW', 'EG']
@@ -218,13 +295,36 @@ def load_sleep_edf_dataset(
                 print(f"  Warning: No hypnogram for {psg_file.stem}, skipping")
             continue
         
+        # Per-subject caching path
+        subj_cache_path = subj_cache_dir / f"{subject_id}.npz"
+
+        if use_cache and incremental_cache and subj_cache_path.exists():
+            if verbose:
+                print(f"  Loading {subject_id} from cache...")
+            try:
+                data = np.load(subj_cache_path, allow_pickle=True)
+                X = data['X']
+                y = data['y']
+                X_list.append(X)
+                y_list.append(y)
+                continue
+            except Exception as e:
+                if verbose:
+                    print(f"  Warning: Failed to read cache for {subject_id}: {e}. Recomputing...")
+                # fall through to recompute
+
         if verbose:
-            print(f"  Loading {psg_file.stem.replace('-PSG', '')}...")
-        
+            print(f"  Loading {subject_id}...")
+
         try:
             X, y = load_sleep_edf_subject(psg_file, hypno_file)
             X_list.append(X)
             y_list.append(y)
+
+            # Save per-subject cache immediately
+            if use_cache and incremental_cache:
+                subj_cache_dir.mkdir(parents=True, exist_ok=True)
+                np.savez_compressed(subj_cache_path, X=X, y=y)
         except Exception as e:
             if verbose:
                 print(f"  Error loading {subject_id}: {e}")
@@ -235,8 +335,8 @@ def load_sleep_edf_dataset(
         print(f"  Avg epochs per subject: {np.mean([len(X) for X in X_list]):.0f}")
         print(f"  Features per epoch: {X_list[0].shape[1]}")
     
-    # Save to cache
-    if use_cache:
+    # Save combined cache snapshot
+    if use_cache and (not incremental_cache):
         cache_dir.mkdir(parents=True, exist_ok=True)
         if verbose:
             print(f"  Saving to cache: {cache_file.name}...")

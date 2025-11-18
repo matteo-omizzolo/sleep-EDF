@@ -107,10 +107,12 @@ class IndependentDPHMM:
         for i, X in enumerate(X_list):
             if i % 3 == 0:
                 print(f"  Subject {i+1}/{len(X_list)}")
+            # Remove kappa from kwargs if present to avoid duplicate argument
+            kwargs_copy = {k: v for k, v in self.kwargs.items() if k != 'kappa'}
             model = SimpleStickyHDPHMM(
                 K_max=self.K_max,
-                kappa=0.1,  # Minimal stickiness
-                **self.kwargs
+                kappa=0.1,  # Minimal stickiness for independent models
+                **kwargs_copy
             )
             model.fit([X])  # Single subject
             self.models.append(model)
@@ -165,9 +167,11 @@ def run_loso_experiment(X_list, y_list, verbose=True):
             print("\nTraining HDP-HMM...")
         hdp_model = SimpleStickyHDPHMM(
             K_max=15,
-            kappa=10.0,
-            n_iter=300,
-            burn_in=100,
+            gamma=2.0,  # Better state discovery
+            alpha=5.0,  # More flexible transitions
+            kappa=50.0,  # Strong persistence for realistic stage durations
+            n_iter=500,  # More iterations for better convergence
+            burn_in=200,
             random_state=42 + test_idx,
             verbose=0
         )
@@ -178,8 +182,11 @@ def run_loso_experiment(X_list, y_list, verbose=True):
             print("Training independent DP-HMMs...")
         idp_model = IndependentDPHMM(
             K_max=15,
-            n_iter=300,
-            burn_in=100,
+            gamma=2.0,
+            alpha=5.0,
+            kappa=50.0,
+            n_iter=500,
+            burn_in=200,
             random_state=42 + test_idx,
             verbose=0
         )
@@ -234,6 +241,9 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--quick", action="store_true", help="Quick mode (fewer iterations)")
     parser.add_argument("--use-real-data", action="store_true", help="Use real Sleep-EDF dataset")
+    parser.add_argument("--no-incremental-cache", dest="incremental_cache", action="store_false",
+                        help="Disable per-subject incremental caching (use only combined cache)")
+    parser.set_defaults(incremental_cache=True)
     
     args = parser.parse_args()
     
@@ -249,6 +259,8 @@ def main():
     print(f"Epochs per subject: {args.n_epochs}")
     print(f"Output: {output_dir}")
     print(f"Data source: {'Real Sleep-EDF' if args.use_real_data else 'Synthetic'}")
+    if args.use_real_data:
+        print(f"Incremental cache: {'ON' if args.incremental_cache else 'OFF'}")
     print("="*80)
     
     # Load or generate data
@@ -258,7 +270,9 @@ def main():
         X_list, y_list = load_sleep_edf_dataset(
             data_dir,
             n_subjects=args.n_subjects,
-            verbose=True
+            verbose=True,
+            use_cache=True,
+            incremental_cache=args.incremental_cache,
         )
         print(f"  Loaded {len(X_list)} subjects from Sleep-EDF")
     else:
@@ -270,6 +284,22 @@ def main():
         )
         print(f"  Generated {len(X_list)} subjects, {X_list[0].shape[1]} features")
     
+    # Standardize features for better model performance
+    print("\n  Standardizing features...")
+    from sklearn.preprocessing import StandardScaler
+    X_all = np.vstack(X_list)
+    scaler = StandardScaler()
+    X_all_scaled = scaler.fit_transform(X_all)
+    
+    # Split back into subjects
+    idx = 0
+    X_list_scaled = []
+    for X in X_list:
+        n = len(X)
+        X_list_scaled.append(X_all_scaled[idx:idx+n])
+        idx += n
+    X_list = X_list_scaled
+    
     # Train models
     print("\n[2/5] Training models on all subjects...")
     
@@ -279,7 +309,9 @@ def main():
     print("  Training HDP-HMM...")
     hdp_model = SimpleStickyHDPHMM(
         K_max=15,
-        kappa=10.0,
+        gamma=2.0,  # Better state discovery
+        alpha=5.0,  # More flexible transitions
+        kappa=50.0,  # Strong persistence for realistic sleep stage durations
         n_iter=n_iter,
         burn_in=burn_in,
         random_state=args.seed,
@@ -290,6 +322,9 @@ def main():
     print("\n  Training independent DP-HMMs...")
     idp_model = IndependentDPHMM(
         K_max=15,
+        gamma=2.0,
+        alpha=5.0,
+        kappa=50.0,
         n_iter=n_iter,
         burn_in=burn_in,
         random_state=args.seed,
@@ -424,6 +459,32 @@ def main():
     hdp_dwells = compute_dwell_times(np.concatenate([s['states'][0] for s in hdp_model.samples_[-20:]]))
     idp_dwells = compute_dwell_times(np.concatenate([s['states'][0] for s in idp_model.models[0].samples_[-20:]]))
     
+    # Compute per-class F1 scores to show class imbalance handling
+    from sklearn.metrics import classification_report
+    
+    # Get all predictions for per-class analysis
+    y_all_true = np.concatenate(y_list)
+    hdp_all_pred = np.concatenate(hdp_preds)
+    idp_all_pred = np.concatenate(idp_preds)
+    
+    # Per-class F1 for HDP
+    hdp_report = classification_report(
+        y_all_true, hdp_all_pred,
+        target_names=['W', 'N1', 'N2', 'N3', 'REM'],
+        output_dict=True,
+        zero_division=0
+    )
+    hdp_per_class = {name: hdp_report[name]['f1-score'] for name in ['W', 'N1', 'N2', 'N3', 'REM']}
+    
+    # Per-class F1 for iDP
+    idp_report = classification_report(
+        y_all_true, idp_all_pred,
+        target_names=['W', 'N1', 'N2', 'N3', 'REM'],
+        output_dict=True,
+        zero_division=0
+    )
+    idp_per_class = {name: idp_report[name]['f1-score'] for name in ['W', 'N1', 'N2', 'N3', 'REM']}
+    
     summary = {
         'hdp_K': hdp_model.get_posterior_mean_K(),
         'idp_K': sum([m.get_posterior_mean_K() for m in idp_model.models]),
@@ -439,7 +500,16 @@ def main():
         'idp_f1': np.mean(loso_results['idp_f1']),
     }
     
-    plots.create_summary_table(summary, output_path=output_dir / "summary_table.txt")
+    per_class_results = {
+        'hdp_per_class': hdp_per_class,
+        'idp_per_class': idp_per_class
+    }
+    
+    plots.create_summary_table(
+        summary,
+        output_path=output_dir / "summary_table.txt",
+        per_class_results=per_class_results
+    )
     
     print("\n" + "="*80)
     print("EXPERIMENT COMPLETE!")

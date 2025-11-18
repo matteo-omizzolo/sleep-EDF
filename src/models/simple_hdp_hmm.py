@@ -22,9 +22,9 @@ class SimpleStickyHDPHMM:
     def __init__(
         self,
         K_max: int = 20,
-        gamma: float = 1.0,
-        alpha: float = 1.0,
-        kappa: float = 10.0,
+        gamma: float = 2.0,  # Increased for better state discovery
+        alpha: float = 5.0,  # Increased to allow more flexible transitions
+        kappa: float = 50.0,  # Significantly increased for realistic sleep stage durations
         n_iter: int = 500,
         burn_in: int = 200,
         random_state: Optional[int] = None,
@@ -46,24 +46,36 @@ class SimpleStickyHDPHMM:
         self.mu_ = None
         self.Sigma_ = None
         self.states_ = None
+        self.duration_means_ = None  # Add duration modeling
         
         # Posterior samples
         self.samples_ = []
         self.is_fitted = False
     
     def _initialize_params(self, X_list: List[np.ndarray]) -> None:
-        """Initialize parameters using data."""
+        """Initialize parameters using data with improved clustering."""
         X_all = np.vstack(X_list)
         self.d = X_all.shape[1]
         self.M = len(X_list)
         
-        # Initialize with k-means for better starting point
-        from sklearn.cluster import KMeans
-        kmeans = KMeans(n_clusters=min(10, self.K_max), random_state=self.rng, n_init=10)
-        kmeans.fit(X_all)
+        # Use hierarchical clustering for better initialization (better for sleep stages)
+        from sklearn.cluster import AgglomerativeClustering
+        from sklearn.preprocessing import StandardScaler
         
-        # Global stick-breaking weights
-        self.beta_ = self._sample_beta()
+        # Standardize for clustering
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_all)
+        
+        # Use 12 initial clusters (more than 5 sleep stages to capture variability)
+        n_init_clusters = min(12, self.K_max)
+        clustering = AgglomerativeClustering(
+            n_clusters=n_init_clusters,
+            linkage='ward'
+        )
+        labels = clustering.fit_predict(X_scaled)
+        
+        # Global stick-breaking weights (with more mass on early components)
+        self.beta_ = self._sample_beta_informed(n_init_clusters)
         
         # Transition matrices (M subjects)
         self.pi_ = np.zeros((self.M, self.K_max, self.K_max))
@@ -71,21 +83,29 @@ class SimpleStickyHDPHMM:
             for j in range(self.K_max):
                 self.pi_[m, j] = self._sample_pi_j(j)
         
-        # Emission parameters from k-means
+        # Emission parameters from hierarchical clustering
         self.mu_ = np.zeros((self.K_max, self.d))
         self.Sigma_ = np.zeros((self.K_max, self.d, self.d))
         
-        for k in range(min(10, self.K_max)):
-            if k < len(kmeans.cluster_centers_):
-                self.mu_[k] = kmeans.cluster_centers_[k]
+        for k in range(n_init_clusters):
+            cluster_mask = labels == k
+            if cluster_mask.sum() > 2:
+                self.mu_[k] = X_all[cluster_mask].mean(axis=0)
+                cluster_cov = np.cov(X_all[cluster_mask].T)
+                # Add regularization
+                self.Sigma_[k] = cluster_cov + 0.1 * np.eye(self.d)
             else:
-                self.mu_[k] = X_all.mean(axis=0) + self.rng.randn(self.d)
-            self.Sigma_[k] = np.cov(X_all.T) + 0.1 * np.eye(self.d)
+                self.mu_[k] = X_all.mean(axis=0) + self.rng.randn(self.d) * 0.5
+                self.Sigma_[k] = np.cov(X_all.T) + 0.1 * np.eye(self.d)
         
-        # Initialize remaining states
-        for k in range(10, self.K_max):
-            self.mu_[k] = X_all.mean(axis=0) + self.rng.randn(self.d)
-            self.Sigma_[k] = np.cov(X_all.T) + 0.1 * np.eye(self.d)
+        # Initialize remaining states with larger variance
+        for k in range(n_init_clusters, self.K_max):
+            self.mu_[k] = X_all.mean(axis=0) + self.rng.randn(self.d) * 0.5
+            self.Sigma_[k] = np.cov(X_all.T) + 0.5 * np.eye(self.d)
+        
+        # Initialize duration means (in units of 30-second epochs)
+        # Typical sleep stage durations: 1-20 minutes = 2-40 epochs
+        self.duration_means_ = np.random.gamma(5, 3, size=self.K_max)  # Mean ~15 epochs
     
     def _sample_beta(self) -> np.ndarray:
         """Sample global stick-breaking weights."""
@@ -96,6 +116,18 @@ class SimpleStickyHDPHMM:
         for k in range(1, self.K_max):
             beta[k] = v[k] * stick_left
             stick_left *= (1 - v[k])
+        return beta
+    
+    def _sample_beta_informed(self, n_active: int) -> np.ndarray:
+        """Sample beta with more mass on first n_active components."""
+        beta = np.zeros(self.K_max)
+        # Put uniform mass on first n_active components
+        beta[:n_active] = 1.0 / n_active * 0.95
+        # Small mass on remaining
+        beta[n_active:] = 0.05 / (self.K_max - n_active)
+        # Add small noise
+        beta += self.rng.dirichlet(np.ones(self.K_max) * 0.1)
+        beta /= beta.sum()
         return beta
     
     def _sample_pi_j(self, j: int) -> np.ndarray:
