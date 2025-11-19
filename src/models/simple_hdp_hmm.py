@@ -280,8 +280,17 @@ class SimpleStickyHDPHMM:
                 trans_prob = trans_prob / (trans_prob.sum() + 1e-100)
             
             # Final safety check before sampling
-            if not np.all(np.isfinite(trans_prob)) or np.any(trans_prob < 0) or trans_prob.sum() < 1e-100:
+            if not np.all(np.isfinite(trans_prob)) or np.any(trans_prob < 0):
                 trans_prob = np.ones(self.K_max) / self.K_max
+            
+            # Ensure exact normalization for numpy's choice (requires sum exactly 1.0)
+            prob_sum_final = trans_prob.sum()
+            if abs(prob_sum_final - 1.0) > 1e-10:
+                trans_prob = trans_prob / prob_sum_final
+            
+            # Clip to valid probability range
+            trans_prob = np.clip(trans_prob, 0.0, 1.0)
+            trans_prob = trans_prob / trans_prob.sum()  # Final normalization
             
             states[t] = self.rng.choice(self.K_max, p=trans_prob)
         

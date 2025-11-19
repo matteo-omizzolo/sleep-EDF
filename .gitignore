@@ -41,3 +41,4 @@ results/presentation/
 
 # Data cache (optional - can be regenerated)
 # data/processed/
+results/final/hdp_model_checkpoint.pkl
