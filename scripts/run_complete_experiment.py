@@ -34,9 +34,16 @@ from pathlib import Path
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
+import argparse
+import numpy as np
+import os
+import sys
+from pathlib import Path
+import time
+import pickle
+
 # Add src to path
-src_path = Path(__file__).parent.parent / "src"
-sys.path.insert(0, str(src_path))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import numpy as np
 import warnings
@@ -326,18 +333,32 @@ def main():
     n_iter = 200 if args.quick else 1000  # 800 post-burnin samples
     burn_in = 50 if args.quick else 200
     
-    print("  Training HDP-HMM...")
-    hdp_model = SimpleStickyHDPHMM(
-        K_max=12,        # Higher to allow discovery of 5+ states
-        gamma=5.0,       # Higher for better state discovery (DP concentration)
-        alpha=10.0,      # Higher for more flexible transitions
-        kappa=15.0,      # Reduced to prevent post-burnin collapse (was 50)
-        n_iter=n_iter,
-        burn_in=burn_in,
-        random_state=args.seed,
-        verbose=1
-    )
-    hdp_model.fit(X_list)
+    # Check for HDP checkpoint
+    hdp_checkpoint_path = os.path.join(args.output, 'hdp_model_checkpoint.pkl')
+    if os.path.exists(hdp_checkpoint_path):
+        print(f"  Loading HDP-HMM from checkpoint: {hdp_checkpoint_path}")
+        with open(hdp_checkpoint_path, 'rb') as f:
+            hdp_model = pickle.load(f)
+        print(f"  Loaded! Mean K={np.mean([s['K'] for s in hdp_model.samples_]):.1f}")
+    else:
+        print("  Training HDP-HMM...")
+        hdp_model = SimpleStickyHDPHMM(
+            K_max=12,        # Higher to allow discovery of 5+ states
+            gamma=5.0,       # Higher for better state discovery (DP concentration)
+            alpha=10.0,      # Higher for more flexible transitions
+            kappa=15.0,      # Reduced to prevent post-burnin collapse (was 50)
+            n_iter=n_iter,
+            burn_in=burn_in,
+            random_state=args.seed,
+            verbose=1
+        )
+        hdp_model.fit(X_list)
+        
+        # Save checkpoint
+        print(f"  Saving HDP checkpoint to {hdp_checkpoint_path}")
+        with open(hdp_checkpoint_path, 'wb') as f:
+            pickle.dump(hdp_model, f)
+        print("  Checkpoint saved!")
     
     print("\n  Training independent DP-HMMs...")
     idp_model = IndependentDPHMM(
