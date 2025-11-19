@@ -474,11 +474,27 @@ def main():
     hdp_pred_aligned, _ = hungarian_alignment(y_list[0], hdp_pred)
     idp_pred_aligned, _ = hungarian_alignment(y_list[0], idp_pred)
     
+    # Find a segment with sleep (not all wake) - look for variety in stages
+    # Start from hour 2 (epoch 240) to avoid initial wake period
+    best_start = 240
+    max_variety = 0
+    
+    for start in range(240, len(y_list[0]) - 600, 60):  # Check every hour
+        segment = y_list[0][start:start+600]
+        variety = len(np.unique(segment))  # Number of different stages
+        if variety > max_variety:
+            max_variety = variety
+            best_start = start
+    
+    # Use 5 hours of data from the most varied segment
+    epoch_start = best_start
+    epoch_end = best_start + 600
+    
     plots.plot_hypnogram_reconstruction(
-        y_list[0][:300],  # First 2.5 hours
-        hdp_pred_aligned[:300],
-        idp_pred_aligned[:300],
-        subject_id="Subject 1",
+        y_list[0][epoch_start:epoch_end],
+        hdp_pred_aligned[epoch_start:epoch_end],
+        idp_pred_aligned[epoch_start:epoch_end],
+        subject_id=f"Subject 1 (hours {epoch_start//120:.1f}-{epoch_end//120:.1f})",
         output_path=fig_dir / "fig8_hypnogram_reconstruction.pdf"
     )
     
