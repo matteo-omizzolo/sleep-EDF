@@ -4,31 +4,22 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
 
 # Virtual environments
 .venv/
 venv/
 ENV/
 env/
-.virtualenv/
+
+# Experiment logs and outputs
+*.log
+*.pid
+logs/*.log
+experiment*.log
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
 
 # IDEs
 .vscode/
@@ -36,76 +27,17 @@ env/
 *.swp
 *.swo
 *~
+
+# OS
 .DS_Store
-
-# Jupyter Notebook
-.ipynb_checkpoints
-*.ipynb_checkpoints/
-
-# Data (large files - not tracked)
-data/raw/
-data/processed/
-*.edf
-*.rec
-*.hyp
-*.npy
-*.npz
-*.h5
-*.hdf5
-
-# Results & outputs
-results/
-output/
-logs/
-*.log
-
-# Models & checkpoints (large files - saved model files, not source code)
-*.pkl
-*.pickle
-*.joblib
-saved_models/
-checkpoints/
-
-# Figures (regenerate from code)
-figures/
-*.png
-*.pdf
-*.svg
-*.eps
-
-# Configuration overrides (keep default configs only)
-configs/local_*.yaml
-configs/experiment_configs/personal_*.yaml
-
-# MCMC samples & diagnostics
-samples/
-traces/
-diagnostics/
-
-# Temporary files
-tmp/
-temp/
-*.tmp
-
-# OS-specific
 Thumbs.db
-.directory
 
-# pytest
-.pytest_cache/
-.coverage
-htmlcov/
+# Temporary results (keep only final results)
+results/test/
+results/quick_real/
+results/full_experiment/
+results/final_test/
+results/presentation/
 
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Sphinx documentation
-docs/_build/
-docs/_static/
-docs/_templates/
-
-# Environment variables
-.env
-.env.local
+# Data cache (optional - can be regenerated)
+# data/processed/
