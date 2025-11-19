@@ -131,14 +131,15 @@ class SimpleStickyHDPHMM:
         state_counts = np.bincount(all_states, minlength=self.K_max)
         
         # Sample stick-breaking weights informed by data
-        # v_k ~ Beta(1 + n_k, gamma + sum_{j>k} n_j)
+        # Correct formula: v_k ~ Beta(1 + n_k, gamma + sum_{j>k} n_j)
+        # sum_{j>k} means sum of counts for indices AFTER k
         v = np.zeros(self.K_max)
-        cumsum_counts = np.cumsum(state_counts[::-1])[::-1]  # Reverse cumsum
         
         for k in range(self.K_max - 1):
             a = 1.0 + state_counts[k]
-            b = self.gamma + cumsum_counts[k+1] if k < self.K_max - 1 else self.gamma
-            v[k] = self.rng.beta(a, b)
+            # Sum of counts for all states j > k
+            b = self.gamma + np.sum(state_counts[k+1:])
+            v[k] = self.rng.beta(a, max(b, 1e-10))
         v[-1] = 1.0  # Last stick gets all remaining
         
         # Convert to beta weights
@@ -176,7 +177,11 @@ class SimpleStickyHDPHMM:
     def _forward_backward(
         self, X: np.ndarray, pi: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray, float]:
-        """Forward-backward algorithm (optimized)."""
+        """Forward-backward algorithm for sticky HDP-HMM.
+        
+        Initial state distribution: p(z_1) = beta (global stick-breaking weights)
+        Transition distribution: p(z_t|z_{t-1}=j) = pi_j (sticky transitions)
+        """
         T = len(X)
         K = self.K_max
         
@@ -190,9 +195,10 @@ class SimpleStickyHDPHMM:
             except:
                 log_B[:, k] = -1e10
         
-        # Forward pass (vectorized)
-        log_pi = np.log(pi + 1e-10)
+        # Forward pass
+        log_pi = np.log(pi + 1e-10)  # K x K transition matrix
         log_alpha = np.zeros((T, K))
+        # Initial: p(z_1=k) = beta_k * p(x_1|z_1=k)
         log_alpha[0] = np.log(self.beta_ + 1e-10) + log_B[0]
         
         for t in range(1, T):
@@ -212,11 +218,7 @@ class SimpleStickyHDPHMM:
         log_gamma -= logsumexp(log_gamma, axis=1, keepdims=True)
         gamma = np.exp(np.clip(log_gamma, -500, 500))
         
-        # Simplified xi computation
-        xi = np.zeros((T-1, K, K))
-        for t in range(T-1):
-            xi[t] = gamma[t][:, None] * pi * np.exp(log_B[t+1] + log_beta_bw[t+1])
-            xi[t] /= (xi[t].sum() + 1e-10)
+        # Compute xi (two-slice marginals) for state transitions
         xi = np.zeros((T-1, K, K))
         for t in range(T-1):
             for j in range(K):
@@ -232,56 +234,62 @@ class SimpleStickyHDPHMM:
     def _sample_states(
         self, X: np.ndarray, pi: np.ndarray
     ) -> np.ndarray:
-        """Sample state sequence."""
+        """Sample state sequence using backward sampling.
+        
+        Correct backward sampling:
+        1. Sample z_T ~ p(z_T | X) = gamma_T
+        2. Sample z_t ~ p(z_t | z_{t+1}, X_{1:t}) ∝ p(z_{t+1} | z_t) * p(z_t | X_{1:t})
+                                                     = pi[z_t, z_{t+1}] * gamma_t[z_t]
+        """
         gamma, xi, _ = self._forward_backward(X, pi)
         T = len(X)
         states = np.zeros(T, dtype=int)
         
-        # Sample last state
+        # Sample last state from marginal posterior
         p_last = gamma[-1]
-        # Replace NaNs/Infs with zeros, then normalize
         p_last = np.nan_to_num(p_last, nan=0.0, posinf=0.0, neginf=0.0)
         total = p_last.sum()
         if total > 1e-10:
             p_last = p_last / total
         else:
-            # Uniform fallback if all zero or invalid
             p_last = np.ones(self.K_max) / self.K_max
-        # Final check: if still any NaN, fallback
         if not np.all(np.isfinite(p_last)) or np.any(np.isnan(p_last)):
             p_last = np.ones(self.K_max) / self.K_max
         states[-1] = self.rng.choice(self.K_max, p=p_last)
         
-        # Sample backward
+        # Sample backward: p(z_t | z_{t+1}, X_{1:t}) ∝ pi[z_t, z_{t+1}] * gamma[t, z_t]
         for t in range(T-2, -1, -1):
-            trans_prob = xi[t, :, states[t+1]]
-            prob_sum = trans_prob.sum()
+            # Conditional distribution: p(z_t = j | z_{t+1} = k, X_{1:t})
+            # Proportional to: p(z_{t+1} = k | z_t = j) * p(z_t = j | X_{1:t})
+            #                = pi[j, k] * gamma[t, j]
+            next_state = states[t+1]
+            trans_prob = pi[:, next_state] * gamma[t]  # Vector of length K
             
             # Handle numerical issues
-            if prob_sum < 1e-10 or not np.isfinite(prob_sum):
-                # Fallback to marginal
-                trans_prob = gamma[t]
-            
-            # Normalize carefully
-            trans_prob = np.maximum(trans_prob, 0)  # Ensure non-negative
+            trans_prob = np.nan_to_num(trans_prob, nan=0.0, posinf=0.0, neginf=0.0)
+            trans_prob = np.maximum(trans_prob, 0)
             prob_sum = trans_prob.sum()
+            
             if prob_sum > 1e-10:
                 trans_prob = trans_prob / prob_sum
             else:
-                # Uniform fallback
-                trans_prob = np.ones(self.K_max) / self.K_max
+                # Fallback to marginal if transition gives invalid probs
+                trans_prob = gamma[t]
+                trans_prob = np.maximum(trans_prob, 0)
+                trans_prob = trans_prob / (trans_prob.sum() + 1e-10)
             
             states[t] = self.rng.choice(self.K_max, p=trans_prob)
         
         return states
     
-    def _update_emissions(self, X_list: List[np.ndarray], states_list: List[np.ndarray]) -> None:
+    def _update_emissions(self, X_list: List[np.ndarray], states_list: List[np.ndarray], 
+                         inflation_factor: float = 1.0) -> None:
         """Update emission parameters given states."""
-        # NIW prior (weak)
+        # NIW prior (stronger to prevent collapse)
         mu_0 = np.vstack(X_list).mean(axis=0)
-        kappa_0 = 0.01
-        nu_0 = self.d + 2
-        Psi_0 = np.cov(np.vstack(X_list).T) * (self.d + 2)
+        kappa_0 = 0.1  # Increased from 0.01 for stronger prior
+        nu_0 = self.d + 10  # Increased for more prior mass
+        Psi_0 = np.cov(np.vstack(X_list).T) * (self.d + 10)  # Matched to nu_0
         
         for k in range(self.K_max):
             # Collect data assigned to state k
@@ -313,17 +321,19 @@ class SimpleStickyHDPHMM:
                 
                 # Sample from posterior
                 try:
-                    self.Sigma_[k] = invwishart.rvs(df=nu_n, scale=Psi_n, random_state=self.rng)
+                    Sigma_k = invwishart.rvs(df=nu_n, scale=Psi_n, random_state=self.rng)
+                    # Inflate covariance during burn-in to maintain exploration
+                    self.Sigma_[k] = Sigma_k * inflation_factor
                     self.mu_[k] = self.rng.multivariate_normal(
                         mu_n, self.Sigma_[k] / kappa_n
                     )
                 except:
                     # Fallback to prior
-                    self.Sigma_[k] = invwishart.rvs(df=nu_0, scale=Psi_0, random_state=self.rng)
+                    self.Sigma_[k] = invwishart.rvs(df=nu_0, scale=Psi_0, random_state=self.rng) * inflation_factor
                     self.mu_[k] = mu_0 + self.rng.randn(self.d) * 0.1
             else:
                 # Sample from prior
-                self.Sigma_[k] = invwishart.rvs(df=nu_0, scale=Psi_0, random_state=self.rng)
+                self.Sigma_[k] = invwishart.rvs(df=nu_0, scale=Psi_0, random_state=self.rng) * inflation_factor
                 self.mu_[k] = mu_0 + self.rng.randn(self.d) * 0.1
     
     def _update_transitions(self, states_list: List[np.ndarray]) -> None:
@@ -356,18 +366,31 @@ class SimpleStickyHDPHMM:
         self._initialize_params(X_list)
         states_list = [np.zeros(len(X), dtype=int) for X in X_list]
         
+        # Store original kappa for later restoration
+        original_kappa = self.kappa
+        
         for iter_idx in range(self.n_iter):
+            # Gradually transition from exploration to exploitation
+            progress = iter_idx / self.burn_in if iter_idx < self.burn_in else 1.0
+            
+            # Gradually increase stickiness (instead of abrupt change)
+            kappa_multiplier = 0.1 + 0.9 * progress  # 0.1 -> 1.0 smoothly
+            self.kappa = original_kappa * kappa_multiplier
+            
+            # Gradually reduce covariance inflation
+            inflation_factor = 3.0 - 2.0 * progress  # 3.0 -> 1.0 smoothly
+            
             # E-step: Sample states
             for m in range(self.M):
                 states_list[m] = self._sample_states(X_list[m], self.pi_[m])
             
-            # M-step: Update parameters every iteration for better mixing
-            self._update_emissions(X_list, states_list)
+            # M-step: Update parameters every iteration
+            self._update_emissions(X_list, states_list, inflation_factor=inflation_factor)
             self._update_transitions(states_list)
             self.beta_ = self._sample_beta()
             
-            # Save sample (less frequently)
-            if iter_idx >= self.burn_in and (iter_idx - self.burn_in) % 10 == 0:
+            # Save sample post-burnin (collect all for better posterior inference)
+            if iter_idx >= self.burn_in:
                 K_active = len(np.unique(np.concatenate(states_list)))
                 self.samples_.append({
                     'beta': self.beta_.copy(),

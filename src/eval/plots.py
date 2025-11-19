@@ -17,9 +17,14 @@ plt.rcParams['figure.dpi'] = 150
 plt.rcParams['savefig.dpi'] = 300
 plt.rcParams['savefig.bbox'] = 'tight'
 
+# Formal color palette - plain grays and blues
+COLOR_PRIMARY = '#4A5568'      # Dark gray
+COLOR_SECONDARY = '#718096'    # Medium gray
+COLOR_ACCENT = '#2D3748'       # Darker gray
+COLOR_LIGHT = '#A0AEC0'        # Light gray
 
 STAGE_NAMES = ['W', 'N1', 'N2', 'N3', 'REM']
-STAGE_COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7']
+STAGE_COLORS = ['#2D3748', '#4A5568', '#718096', '#A0AEC0', '#CBD5E0']  # Grayscale
 
 
 def plot_posterior_num_states(
@@ -36,7 +41,7 @@ def plot_posterior_num_states(
     
     # HDP-HMM: Global K
     hdp_K = [s['K'] for s in hdp_samples]
-    axes[0].hist(hdp_K, bins=range(3, max(hdp_K)+2), alpha=0.7, color='steelblue', edgecolor='black')
+    axes[0].hist(hdp_K, bins=range(3, max(hdp_K)+2), alpha=0.8, color=COLOR_PRIMARY, edgecolor='black')
     axes[0].axvline(np.mean(hdp_K), color='red', linestyle='--', linewidth=2, label=f'Mean = {np.mean(hdp_K):.1f}')
     axes[0].set_xlabel('Number of Global States (K)')
     axes[0].set_ylabel('Posterior Density')
@@ -51,7 +56,7 @@ def plot_posterior_num_states(
         K_sample = sum([s['K'] for s in samples])
         idp_K_total.append(K_sample)
     
-    axes[1].hist(idp_K_total, bins=15, alpha=0.7, color='coral', edgecolor='black')
+    axes[1].hist(idp_K_total, bins=15, alpha=0.8, color=COLOR_SECONDARY, edgecolor='black')
     axes[1].axvline(np.mean(idp_K_total), color='red', linestyle='--', linewidth=2, label=f'Mean = {np.mean(idp_K_total):.1f}')
     axes[1].set_xlabel('Total States Across All Subjects')
     axes[1].set_ylabel('Posterior Density')
@@ -85,7 +90,7 @@ def plot_state_sharing_heatmap(
     fig, ax = plt.subplots(figsize=(12, 8))
     sns.heatmap(
         usage_active,
-        cmap='YlOrRd',
+        cmap='Greys',
         cbar_kws={'label': 'Usage Probability'},
         linewidths=0.5,
         linecolor='gray',
@@ -283,7 +288,7 @@ def plot_stick_breaking_weights(
     
     # Bar plot with error bars
     x = np.arange(len(beta_mean))  # Use actual length
-    axes[0].bar(x, beta_mean, yerr=beta_std, capsize=5, color='steelblue', alpha=0.7, edgecolor='black')
+    axes[0].bar(x, beta_mean, yerr=beta_std, capsize=5, color=COLOR_PRIMARY, alpha=0.8, edgecolor='black')
     axes[0].set_xlabel('State Index', fontsize=14)
     axes[0].set_ylabel('Weight β_k', fontsize=14)
     axes[0].set_title('Global Stick-Breaking Weights', fontsize=14, fontweight='bold')
@@ -291,7 +296,7 @@ def plot_stick_breaking_weights(
     
     # Cumulative mass
     cum_mass = np.cumsum(beta_mean)
-    axes[1].plot(x, cum_mass, 'o-', color='steelblue', linewidth=2, markersize=8)
+    axes[1].plot(x, cum_mass, 'o-', color=COLOR_ACCENT, linewidth=2, markersize=8)
     axes[1].axhline(0.95, color='red', linestyle='--', label='95% mass')
     axes[1].set_xlabel('State Index', fontsize=14)
     axes[1].set_ylabel('Cumulative Mass', fontsize=14)
@@ -326,9 +331,9 @@ def plot_states_vs_subjects(
     fig, ax = plt.subplots(figsize=(10, 6))
     
     ax.errorbar(n_subjects, hdp_K, yerr=hdp_K_std, marker='o', linewidth=2, 
-                markersize=8, capsize=5, label='HDP-HMM (global K)', color='steelblue')
+                markersize=8, capsize=5, label='HDP-HMM (global K)', color=COLOR_PRIMARY)
     ax.errorbar(n_subjects, idp_K, yerr=idp_K_std, marker='s', linewidth=2,
-                markersize=8, capsize=5, label='iDP-HMM (total K)', color='coral')
+                markersize=8, capsize=5, label='iDP-HMM (total K)', color=COLOR_SECONDARY)
     
     ax.set_xlabel('Number of Subjects (M)', fontsize=14)
     ax.set_ylabel('Expected Number of States E[K]', fontsize=14)
@@ -367,7 +372,7 @@ def plot_hypnogram_reconstruction(
     axes[0].grid(True, alpha=0.3)
     
     # HDP-HMM prediction
-    axes[1].plot(time, hdp_pred, color='steelblue', linewidth=1.5)
+    axes[1].plot(time, hdp_pred, color=COLOR_PRIMARY, linewidth=1.5)
     axes[1].set_ylabel('Sleep Stage', fontsize=12)
     axes[1].set_title('HDP-HMM (Sticky) Prediction', fontsize=14, fontweight='bold')
     axes[1].set_yticks(range(5))
@@ -375,7 +380,7 @@ def plot_hypnogram_reconstruction(
     axes[1].grid(True, alpha=0.3)
     
     # iDP-HMM prediction
-    axes[2].plot(time, idp_pred, color='coral', linewidth=1.5)
+    axes[2].plot(time, idp_pred, color=COLOR_SECONDARY, linewidth=1.5)
     axes[2].set_ylabel('Sleep Stage', fontsize=12)
     axes[2].set_xlabel('Time (hours)', fontsize=14)
     axes[2].set_title('iDP-HMM Prediction', fontsize=14, fontweight='bold')
@@ -441,7 +446,7 @@ def plot_convergence_diagnostics(
     # HDP K trace
     hdp_K = [s['K'] for s in hdp_samples]
     iterations = np.arange(len(hdp_K))
-    axes[0, 0].plot(iterations, hdp_K, linewidth=1.5, color='steelblue', alpha=0.7)
+    axes[0, 0].plot(iterations, hdp_K, linewidth=1.5, color=COLOR_PRIMARY, alpha=0.8)
     axes[0, 0].axhline(np.mean(hdp_K), color='red', linestyle='--', label=f'Mean={np.mean(hdp_K):.1f}')
     axes[0, 0].set_xlabel('MCMC Iteration (post burn-in)', fontsize=12)
     axes[0, 0].set_ylabel('Number of States K', fontsize=12)
@@ -464,7 +469,7 @@ def plot_convergence_diagnostics(
     for sample in hdp_samples:
         k_eff = np.sum(sample['beta'] > 0.01)
         effective_K.append(k_eff)
-    axes[1, 0].plot(iterations, effective_K, linewidth=1.5, color='darkgreen', alpha=0.7)
+    axes[1, 0].plot(iterations, effective_K, linewidth=1.5, color=COLOR_ACCENT, alpha=0.8)
     axes[1, 0].axhline(np.mean(effective_K), color='red', linestyle='--', label=f'Mean={np.mean(effective_K):.1f}')
     axes[1, 0].set_xlabel('MCMC Iteration (post burn-in)', fontsize=12)
     axes[1, 0].set_ylabel('Effective K (β > 1%)', fontsize=12)
@@ -548,3 +553,72 @@ def create_summary_table(
     print("="*80)
     
     return table
+
+
+def plot_performance_vs_K(
+    hdp_samples: List[Dict],
+    test_ll_per_sample: List[float],
+    output_path: Optional[Path] = None
+) -> None:
+    """
+    Plot test log-likelihood vs number of discovered states K.
+    
+    Similar to perplexity vs K plot in HDP paper Section 7.
+    Shows that model finds optimal K that balances fit and complexity.
+    """
+    # Extract K for each sample
+    K_values = [s['K'] for s in hdp_samples]
+    
+    # Group test likelihoods by K
+    K_unique = sorted(set(K_values))
+    ll_by_K = {k: [] for k in K_unique}
+    
+    for k, ll in zip(K_values, test_ll_per_sample):
+        ll_by_K[k].append(ll)
+    
+    # Compute mean and std for each K
+    K_plot = []
+    ll_mean = []
+    ll_std = []
+    
+    for k in K_unique:
+        if len(ll_by_K[k]) > 0:
+            K_plot.append(k)
+            ll_mean.append(np.mean(ll_by_K[k]))
+            ll_std.append(np.std(ll_by_K[k]))
+    
+    K_plot = np.array(K_plot)
+    ll_mean = np.array(ll_mean)
+    ll_std = np.array(ll_std)
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Plot with error bars
+    ax.errorbar(K_plot, ll_mean, yerr=ll_std, marker='o', linewidth=2,
+                markersize=8, capsize=5, color=COLOR_PRIMARY, alpha=0.8)
+    
+    # Mark the best K
+    best_idx = np.argmax(ll_mean)
+    best_K = K_plot[best_idx]
+    best_ll = ll_mean[best_idx]
+    
+    ax.plot(best_K, best_ll, 'o', markersize=12, color='red', 
+            label=f'Optimal K={best_K:.0f}', zorder=10)
+    
+    ax.set_xlabel('Number of Discovered States (K)', fontsize=14)
+    ax.set_ylabel('Test Log-Likelihood', fontsize=14)
+    ax.set_title('Model Performance vs Complexity (HDP-HMM)', 
+                 fontsize=16, fontweight='bold')
+    ax.legend(fontsize=12)
+    ax.grid(True, alpha=0.3)
+    
+    # Add annotation
+    ax.annotate('Higher is better',
+                xy=(0.02, 0.98), xycoords='axes fraction',
+                fontsize=11, ha='left', va='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    if output_path:
+        plt.savefig(output_path)
+        print(f"Saved: {output_path}")
+    plt.show()

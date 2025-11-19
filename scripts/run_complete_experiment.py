@@ -322,7 +322,8 @@ def main():
     # Train models
     print("\n[2/5] Training models on all subjects...", flush=True)
     
-    n_iter = 200 if args.quick else 500
+    # Increased iterations for better posterior inference (more samples like HDP paper)
+    n_iter = 200 if args.quick else 1000  # 800 post-burnin samples
     burn_in = 50 if args.quick else 200
     
     print("  Training HDP-HMM...")
@@ -330,7 +331,7 @@ def main():
         K_max=12,        # Higher to allow discovery of 5+ states
         gamma=5.0,       # Higher for better state discovery (DP concentration)
         alpha=10.0,      # Higher for more flexible transitions
-        kappa=50.0,      # Moderate stickiness (balanced, not excessive)
+        kappa=15.0,      # Reduced to prevent post-burnin collapse (was 50)
         n_iter=n_iter,
         burn_in=burn_in,
         random_state=args.seed,
@@ -343,7 +344,7 @@ def main():
         K_max=12,        # Same capacity
         gamma=5.0,       # Same gamma
         alpha=10.0,      # Same alpha
-        kappa=50.0,      # Same kappa (no hierarchical sharing penalty)
+        kappa=15.0,      # Matched to HDP-HMM (was 50)
         n_iter=n_iter,
         burn_in=burn_in,
         random_state=args.seed,
@@ -445,6 +446,21 @@ def main():
         hdp_model.samples_,
         idp_samples_all,
         output_path=fig_dir / "fig6b_convergence_diagnostics.pdf"
+    )
+    
+    # Figure 6c: Performance vs K (like perplexity plot in HDP paper)
+    print("  Figure 6c: Performance vs K...")
+    # Compute test log-likelihood for each posterior sample
+    test_ll_per_sample = []
+    for sample in hdp_model.samples_:
+        # Use first test subject for evaluation
+        ll = hdp_model.log_likelihood(X_list[0], subject_idx=0)
+        test_ll_per_sample.append(ll)
+    
+    plots.plot_performance_vs_K(
+        hdp_model.samples_,
+        test_ll_per_sample,
+        output_path=fig_dir / "fig6c_performance_vs_K.pdf"
     )
     
     # Figure 7: States vs subjects (requires multiple runs - skip for now)
