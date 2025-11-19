@@ -30,6 +30,11 @@ A Bayesian nonparametric approach demonstrating the **superiority of hierarchica
    - Higher ARI/NMI scores (better clustering)
    - Superior handling of class imbalance
 
+4. **Posterior Inference**
+   - 800+ posterior samples for robust uncertainty quantification
+   - Performance vs K plot (like perplexity in HDP paper Section 7)
+   - Convergence diagnostics with K trace over MCMC iterations
+
 ### Key Results
 
 | Metric | HDP-HMM | iDP-HMM |
@@ -39,7 +44,23 @@ A Bayesian nonparametric approach demonstrating the **superiority of hierarchica
 | **ARI Score** | ~0.55 | ~0.40 |
 | **Parameter Efficiency** | O(K) | O(K×M) |
 
-## 📁 Repository Structure
+## 📊 Generated Figures
+
+The experiment generates 9 publication-quality figures:
+
+1. **Posterior over K**: Histogram showing distribution of discovered states (800+ samples)
+2. **State Sharing Heatmap**: Which subjects use which global states
+3. **Dwell Time Distributions**: Realistic sleep stage durations from sticky parameter
+4. **Predictive Performance**: Test log-likelihood comparison
+5. **Label Agreement**: ARI/NMI clustering metrics
+6. **Stick-Breaking Weights**: Global state probabilities β
+   - 6b. **Convergence Diagnostics**: K trace over iterations, β evolution
+   - 6c. **Performance vs K**: Test log-likelihood vs number of states (optimal K discovery)
+7. **States vs Subjects**: Controlled growth under hierarchy
+8. **Hypnogram Reconstruction**: Sleep stage predictions vs ground truth
+9. **Kappa Ablation**: Effect of stickiness parameter
+
+All plots use formal grayscale colors for professional presentations.
 
 ```
 sleep-EDF/
