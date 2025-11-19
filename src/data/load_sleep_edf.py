@@ -76,7 +76,7 @@ def load_sleep_edf_subject(
     trimmed = full_data[:, : n_epochs * samples_per_epoch]
     epochs = trimmed.reshape(trimmed.shape[0], n_epochs, samples_per_epoch)
 
-    X_all = compute_spectral_features_batch(epochs, sfreq)
+    X_all = compute_spectral_features_batch(epochs, sfreq, add_temporal=True)
 
     # Vectorized label assignment per epoch from annotations
     y = np.full(n_epochs, -1, dtype=int)
@@ -146,9 +146,52 @@ def compute_spectral_features(
     return np.array(features)
 
 
+def add_temporal_context_features(X: np.ndarray, window: int = 3) -> np.ndarray:
+    """
+    Add temporal context features (derivatives and rolling statistics).
+    
+    Critical for sleep staging as sleep stages evolve over time!
+    
+    Args:
+        X: Feature array (n_epochs, n_features)
+        window: Rolling window size (default 3 = 90 seconds)
+    
+    Returns:
+        X_enhanced: Array with added temporal features
+    """
+    n_epochs, n_features = X.shape
+    
+    # First-order derivatives (rate of change)
+    X_diff1 = np.zeros_like(X)
+    X_diff1[1:] = np.diff(X, axis=0)
+    X_diff1[0] = X_diff1[1]  # Copy first value
+    
+    # Rolling mean (smoothed features)
+    from scipy.ndimage import uniform_filter1d
+    X_rolling_mean = uniform_filter1d(X, size=window, axis=0, mode='nearest')
+    
+    # Rolling std (variability over time)
+    X_rolling_std = np.zeros_like(X)
+    for i in range(n_epochs):
+        start = max(0, i - window // 2)
+        end = min(n_epochs, i + window // 2 + 1)
+        X_rolling_std[i] = np.std(X[start:end], axis=0)
+    
+    # Concatenate all features
+    X_enhanced = np.concatenate([
+        X,                  # Original features
+        X_diff1,            # Temporal derivatives
+        X_rolling_mean,     # Smoothed context
+        X_rolling_std       # Local variability
+    ], axis=1)
+    
+    return X_enhanced
+
+
 def compute_spectral_features_batch(
     epochs: np.ndarray,
-    sfreq: float
+    sfreq: float,
+    add_temporal: bool = True
 ) -> np.ndarray:
     """
     Compute comprehensive spectral and temporal features for all epochs at once.
@@ -157,14 +200,22 @@ def compute_spectral_features_batch(
     - Band powers (delta, theta, alpha, beta, gamma) - 5 per channel
     - Spectral ratios (theta/alpha, alpha/delta) - 2 per channel  
     - Temporal features (variance, mobility) - 2 per channel
-    Total: 9 features per channel
+    Base: 9 features per channel
+    
+    If add_temporal=True (default), also adds:
+    - First derivatives (9 per channel)
+    - Rolling mean (9 per channel)
+    - Rolling std (9 per channel)
+    Total with temporal: 36 features per channel
 
     Args:
         epochs: Array of shape (n_channels, n_epochs, n_samples)
         sfreq: Sampling frequency
+        add_temporal: Whether to add temporal context features
 
     Returns:
-        X: Array of shape (n_epochs, n_channels * 9)
+        X: Array of shape (n_epochs, n_channels * 9 * 4) if add_temporal
+           or (n_epochs, n_channels * 9) otherwise
     """
     from scipy import signal
 
@@ -225,6 +276,11 @@ def compute_spectral_features_batch(
         features_per_epoch.append(ch_feats)
 
     X = np.concatenate(features_per_epoch, axis=1)  # (n_epochs, n_channels*9)
+    
+    # Add temporal context features if requested
+    if add_temporal:
+        X = add_temporal_context_features(X, window=3)
+    
     return X
 
 

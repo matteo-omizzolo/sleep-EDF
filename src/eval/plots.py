@@ -271,7 +271,9 @@ def plot_stick_breaking_weights(
     
     Shows HDP concentrates mass on few states.
     """
-    # Collect β samples
+    # Collect β samples - use actual size from data
+    K_max = len(hdp_samples[0]['beta'])
+    n_weights = min(n_weights, K_max)  # Don't request more than available
     betas = np.array([s['beta'][:n_weights] for s in hdp_samples])
     
     beta_mean = betas.mean(axis=0)
@@ -280,7 +282,7 @@ def plot_stick_breaking_weights(
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     
     # Bar plot with error bars
-    x = np.arange(n_weights)
+    x = np.arange(len(beta_mean))  # Use actual length
     axes[0].bar(x, beta_mean, yerr=beta_std, capsize=5, color='steelblue', alpha=0.7, edgecolor='black')
     axes[0].set_xlabel('State Index', fontsize=14)
     axes[0].set_ylabel('Weight β_k', fontsize=14)
@@ -426,6 +428,76 @@ def plot_kappa_ablation(
     plt.show()
 
 
+def plot_convergence_diagnostics(
+    hdp_samples: List[Dict],
+    idp_samples_per_subject: List[List[Dict]],
+    output_path: Optional[Path] = None
+) -> None:
+    """
+    Plot convergence diagnostics: K trace, β weights, log-likelihood.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+    
+    # HDP K trace
+    hdp_K = [s['K'] for s in hdp_samples]
+    iterations = np.arange(len(hdp_K))
+    axes[0, 0].plot(iterations, hdp_K, linewidth=1.5, color='steelblue', alpha=0.7)
+    axes[0, 0].axhline(np.mean(hdp_K), color='red', linestyle='--', label=f'Mean={np.mean(hdp_K):.1f}')
+    axes[0, 0].set_xlabel('MCMC Iteration (post burn-in)', fontsize=12)
+    axes[0, 0].set_ylabel('Number of States K', fontsize=12)
+    axes[0, 0].set_title('HDP-HMM: State Count Trace', fontsize=13, fontweight='bold')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # β weight evolution (top 10 components)
+    beta_trace = np.array([s['beta'][:10] for s in hdp_samples])
+    for k in range(10):
+        axes[0, 1].plot(iterations, beta_trace[:, k], label=f'β_{k+1}', alpha=0.7)
+    axes[0, 1].set_xlabel('MCMC Iteration (post burn-in)', fontsize=12)
+    axes[0, 1].set_ylabel('Weight β_k', fontsize=12)
+    axes[0, 1].set_title('HDP-HMM: β Weight Evolution', fontsize=13, fontweight='bold')
+    axes[0, 1].legend(ncol=2, fontsize=8)
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # Effective K (states with >1% mass)
+    effective_K = []
+    for sample in hdp_samples:
+        k_eff = np.sum(sample['beta'] > 0.01)
+        effective_K.append(k_eff)
+    axes[1, 0].plot(iterations, effective_K, linewidth=1.5, color='darkgreen', alpha=0.7)
+    axes[1, 0].axhline(np.mean(effective_K), color='red', linestyle='--', label=f'Mean={np.mean(effective_K):.1f}')
+    axes[1, 0].set_xlabel('MCMC Iteration (post burn-in)', fontsize=12)
+    axes[1, 0].set_ylabel('Effective K (β > 1%)', fontsize=12)
+    axes[1, 0].set_title('HDP-HMM: Effective State Count', fontsize=13, fontweight='bold')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    # iDP total K trace (sum across subjects)
+    if idp_samples_per_subject:
+        n_samples = len(idp_samples_per_subject[0])
+        idp_K_total = []
+        for i in range(n_samples):
+            total_K = sum([samples[i]['K'] for samples in idp_samples_per_subject])
+            idp_K_total.append(total_K)
+        
+        iters_idp = np.arange(len(idp_K_total))
+        axes[1, 1].plot(iters_idp, idp_K_total, linewidth=1.5, color='coral', alpha=0.7)
+        axes[1, 1].axhline(np.mean(idp_K_total), color='red', linestyle='--', label=f'Mean={np.mean(idp_K_total):.1f}')
+        axes[1, 1].set_xlabel('MCMC Iteration (post burn-in)', fontsize=12)
+        axes[1, 1].set_ylabel('Total States (sum across subjects)', fontsize=12)
+        axes[1, 1].set_title('iDP-HMM: Total State Count Trace', fontsize=13, fontweight='bold')
+        axes[1, 1].legend()
+        axes[1, 1].grid(True, alpha=0.3)
+    
+    plt.suptitle('Convergence Diagnostics', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    
+    if output_path:
+        plt.savefig(output_path)
+        print(f"Saved: {output_path}")
+    plt.show()
+
+
 def create_summary_table(
     results: Dict,
     output_path: Optional[Path] = None,
@@ -436,12 +508,17 @@ def create_summary_table(
     
     Returns formatted LaTeX/Markdown table with optional per-class breakdown.
     """
+    # Add note about K if hdp_K_all is present
+    k_note = ""
+    if 'hdp_K_all' in results:
+        k_note = f"\nNote: HDP E[K] shows effective states (β>1%); K_all={results['hdp_K_all']:.1f} with truncation.\n"
+    
     table = """
 | Model            | E[K]  | Median Dwell (s) | Test Log-Lik | ARI   | NMI   | Macro-F1 |
 |------------------|-------|------------------|--------------|-------|-------|----------|
 | iDP-HMM          | {idp_K:5.1f} | {idp_dwell:14.0f} | {idp_ll:11.1f} | {idp_ari:5.3f} | {idp_nmi:5.3f} | {idp_f1:8.3f} |
 | HDP-HMM (sticky) | {hdp_K:5.1f} | {hdp_dwell:14.0f} | {hdp_ll:11.1f} | {hdp_ari:5.3f} | {hdp_nmi:5.3f} | {hdp_f1:8.3f} |
-""".format(**results)
+""".format(**results) + k_note
     
     # Add per-class F1 breakdown if available
     if per_class_results:

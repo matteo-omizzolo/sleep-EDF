@@ -53,26 +53,30 @@ class SimpleStickyHDPHMM:
         self.is_fitted = False
     
     def _initialize_params(self, X_list: List[np.ndarray]) -> None:
-        """Initialize parameters using data with improved clustering."""
+        """Initialize parameters using data with class-balanced clustering."""
         X_all = np.vstack(X_list)
         self.d = X_all.shape[1]
         self.M = len(X_list)
         
-        # Use hierarchical clustering for better initialization (better for sleep stages)
-        from sklearn.cluster import AgglomerativeClustering
+        # Use enough initial clusters to capture minority classes
+        n_init_clusters = min(8, self.K_max)
+        
+        # Initialize with k-means for faster, more balanced clustering
+        from sklearn.cluster import KMeans
         from sklearn.preprocessing import StandardScaler
         
         # Standardize for clustering
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X_all)
         
-        # Use 12 initial clusters (more than 5 sleep stages to capture variability)
-        n_init_clusters = min(12, self.K_max)
-        clustering = AgglomerativeClustering(
+        # Use k-means with multiple restarts for robust initialization
+        kmeans = KMeans(
             n_clusters=n_init_clusters,
-            linkage='ward'
+            n_init=20,  # More restarts for better initialization
+            max_iter=300,
+            random_state=self.rng.randint(10000)
         )
-        labels = clustering.fit_predict(X_scaled)
+        labels = kmeans.fit_predict(X_scaled)
         
         # Global stick-breaking weights (with more mass on early components)
         self.beta_ = self._sample_beta_informed(n_init_clusters)
@@ -83,39 +87,71 @@ class SimpleStickyHDPHMM:
             for j in range(self.K_max):
                 self.pi_[m, j] = self._sample_pi_j(j)
         
-        # Emission parameters from hierarchical clustering
+        # Emission parameters from k-means clustering
         self.mu_ = np.zeros((self.K_max, self.d))
         self.Sigma_ = np.zeros((self.K_max, self.d, self.d))
         
+        global_cov = np.cov(X_all.T)
         for k in range(n_init_clusters):
             cluster_mask = labels == k
-            if cluster_mask.sum() > 2:
+            n_k = cluster_mask.sum()
+            if n_k > self.d + 2:  # Need enough samples for covariance
                 self.mu_[k] = X_all[cluster_mask].mean(axis=0)
                 cluster_cov = np.cov(X_all[cluster_mask].T)
-                # Add regularization
-                self.Sigma_[k] = cluster_cov + 0.1 * np.eye(self.d)
+                # Regularize with global covariance
+                self.Sigma_[k] = 0.8 * cluster_cov + 0.2 * global_cov + 0.1 * np.eye(self.d)
             else:
-                self.mu_[k] = X_all.mean(axis=0) + self.rng.randn(self.d) * 0.5
-                self.Sigma_[k] = np.cov(X_all.T) + 0.1 * np.eye(self.d)
+                self.mu_[k] = X_all.mean(axis=0) + self.rng.randn(self.d) * 0.3
+                self.Sigma_[k] = global_cov + 0.1 * np.eye(self.d)
         
-        # Initialize remaining states with larger variance
+        # Initialize remaining states with high variance
         for k in range(n_init_clusters, self.K_max):
             self.mu_[k] = X_all.mean(axis=0) + self.rng.randn(self.d) * 0.5
-            self.Sigma_[k] = np.cov(X_all.T) + 0.5 * np.eye(self.d)
+            self.Sigma_[k] = global_cov + 1.0 * np.eye(self.d)
         
         # Initialize duration means (in units of 30-second epochs)
         # Typical sleep stage durations: 1-20 minutes = 2-40 epochs
         self.duration_means_ = np.random.gamma(5, 3, size=self.K_max)  # Mean ~15 epochs
     
     def _sample_beta(self) -> np.ndarray:
-        """Sample global stick-breaking weights."""
-        v = self.rng.beta(1, self.gamma, size=self.K_max)
+        """Sample global stick-breaking weights using state counts."""
+        # If states not yet initialized, sample from prior
+        if self.states_ is None or not isinstance(self.states_, list):
+            v = self.rng.beta(1, self.gamma, size=self.K_max)
+            beta = np.zeros(self.K_max)
+            beta[0] = v[0]
+            stick_left = 1 - v[0]
+            for k in range(1, self.K_max):
+                beta[k] = v[k] * stick_left
+                stick_left *= (1 - v[k])
+            return beta
+        
+        # Count how many times each state is used across all subjects
+        all_states = np.concatenate(self.states_)
+        state_counts = np.bincount(all_states, minlength=self.K_max)
+        
+        # Sample stick-breaking weights informed by data
+        # v_k ~ Beta(1 + n_k, gamma + sum_{j>k} n_j)
+        v = np.zeros(self.K_max)
+        cumsum_counts = np.cumsum(state_counts[::-1])[::-1]  # Reverse cumsum
+        
+        for k in range(self.K_max - 1):
+            a = 1.0 + state_counts[k]
+            b = self.gamma + cumsum_counts[k+1] if k < self.K_max - 1 else self.gamma
+            v[k] = self.rng.beta(a, b)
+        v[-1] = 1.0  # Last stick gets all remaining
+        
+        # Convert to beta weights
         beta = np.zeros(self.K_max)
         beta[0] = v[0]
         stick_left = 1 - v[0]
         for k in range(1, self.K_max):
             beta[k] = v[k] * stick_left
             stick_left *= (1 - v[k])
+        
+        # Ensure numerical stability
+        beta = np.maximum(beta, 1e-10)
+        beta /= beta.sum()
         return beta
     
     def _sample_beta_informed(self, n_active: int) -> np.ndarray:
@@ -203,7 +239,17 @@ class SimpleStickyHDPHMM:
         
         # Sample last state
         p_last = gamma[-1]
-        p_last = p_last / p_last.sum()  # Normalize
+        # Replace NaNs/Infs with zeros, then normalize
+        p_last = np.nan_to_num(p_last, nan=0.0, posinf=0.0, neginf=0.0)
+        total = p_last.sum()
+        if total > 1e-10:
+            p_last = p_last / total
+        else:
+            # Uniform fallback if all zero or invalid
+            p_last = np.ones(self.K_max) / self.K_max
+        # Final check: if still any NaN, fallback
+        if not np.all(np.isfinite(p_last)) or np.any(np.isnan(p_last)):
+            p_last = np.ones(self.K_max) / self.K_max
         states[-1] = self.rng.choice(self.K_max, p=p_last)
         
         # Sample backward
@@ -315,11 +361,10 @@ class SimpleStickyHDPHMM:
             for m in range(self.M):
                 states_list[m] = self._sample_states(X_list[m], self.pi_[m])
             
-            # M-step: Update parameters (every 5 iterations to speed up)
-            if iter_idx % 5 == 0:
-                self._update_emissions(X_list, states_list)
-                self._update_transitions(states_list)
-                self.beta_ = self._sample_beta()
+            # M-step: Update parameters every iteration for better mixing
+            self._update_emissions(X_list, states_list)
+            self._update_transitions(states_list)
+            self.beta_ = self._sample_beta()
             
             # Save sample (less frequently)
             if iter_idx >= self.burn_in and (iter_idx - self.burn_in) % 10 == 0:
@@ -364,8 +409,17 @@ class SimpleStickyHDPHMM:
         return ll
     
     def get_posterior_mean_K(self) -> float:
-        """Get posterior mean number of states."""
+        """Get posterior mean number of states (all instantiated)."""
         return np.mean([s['K'] for s in self.samples_])
+    
+    def get_effective_K(self, threshold: float = 0.01) -> float:
+        """Get effective number of states (with >threshold probability mass)."""
+        effective_K_list = []
+        for sample in self.samples_:
+            beta = sample['beta']
+            k_eff = np.sum(beta > threshold)
+            effective_K_list.append(k_eff)
+        return np.mean(effective_K_list)
     
     def get_state_usage(self) -> np.ndarray:
         """Get state usage across all subjects (M x K)."""

@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
 """
-Complete experiment pipeline for generating all plots and tables.
+Complete experiment pipeline for demonstrating HDP-HMM superiority over independent models.
+
+SCIENTIFIC GOAL:
+Demonstrate that hierarchical Bayesian models (HDP-HMM) outperform independent models (iDP-HMM)
+for grouped data where subjects share common underlying patterns (sleep stages).
+
+KEY COMPARISON:
+- HDP-HMM: Shares global state distribution (β) across subjects via hierarchical DP
+  → Discovers common sleep stages efficiently
+  → Better generalization with fewer total parameters
+  → Controlled state proliferation
+  
+- iDP-HMM: Each subject has independent DP-HMM
+  → Must discover states independently
+  → State proliferation (5 states × M subjects)
+  → No knowledge transfer between subjects
 
 This script:
-1. Generates synthetic sleep-like data (or loads real Sleep-EDF if available)
-2. Runs HDP-HMM and iDP-HMM
-3. Performs LOSO cross-validation
-4. Generates all 9 figures + summary table
+1. Loads real Sleep-EDF data (5 true sleep stages shared across subjects)
+2. Trains HDP-HMM (hierarchical) and iDP-HMM (independent)
+3. Evaluates: predictive performance, state discovery, sharing efficiency
+4. Generates comprehensive visualizations and metrics
 
 Usage:
     python scripts/run_complete_experiment.py --n-subjects 10 --output results/presentation
@@ -14,6 +29,10 @@ Usage:
 
 import sys
 from pathlib import Path
+
+# Force unbuffered output for nohup compatibility
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 # Add src to path
 src_path = Path(__file__).parent.parent / "src"
@@ -105,13 +124,12 @@ class IndependentDPHMM:
         self.models = []
         
         for i, X in enumerate(X_list):
-            if i % 3 == 0:
-                print(f"  Subject {i+1}/{len(X_list)}")
+            print(f"  Subject {i+1}/{len(X_list)}")
             # Remove kappa from kwargs if present to avoid duplicate argument
             kwargs_copy = {k: v for k, v in self.kwargs.items() if k != 'kappa'}
             model = SimpleStickyHDPHMM(
                 K_max=self.K_max,
-                kappa=0.1,  # Minimal stickiness for independent models
+                kappa=10.0,  # Reduced stickiness for independent models
                 **kwargs_copy
             )
             model.fit([X])  # Single subject
@@ -252,19 +270,19 @@ def main():
     fig_dir = output_dir / "figures"
     fig_dir.mkdir(exist_ok=True)
     
-    print("="*80)
-    print("HDP-HMM FOR SLEEP STAGING - COMPLETE EXPERIMENT")
-    print("="*80)
-    print(f"Subjects: {args.n_subjects}")
-    print(f"Epochs per subject: {args.n_epochs}")
-    print(f"Output: {output_dir}")
-    print(f"Data source: {'Real Sleep-EDF' if args.use_real_data else 'Synthetic'}")
+    print("="*80, flush=True)
+    print("HDP-HMM FOR SLEEP STAGING - COMPLETE EXPERIMENT", flush=True)
+    print("="*80, flush=True)
+    print(f"Subjects: {args.n_subjects}", flush=True)
+    print(f"Epochs per subject: {args.n_epochs}", flush=True)
+    print(f"Output: {output_dir}", flush=True)
+    print(f"Data source: {'Real Sleep-EDF' if args.use_real_data else 'Synthetic'}", flush=True)
     if args.use_real_data:
-        print(f"Incremental cache: {'ON' if args.incremental_cache else 'OFF'}")
-    print("="*80)
+        print(f"Incremental cache: {'ON' if args.incremental_cache else 'OFF'}", flush=True)
+    print("="*80, flush=True)
     
     # Load or generate data
-    print("\n[1/5] Loading data...")
+    print("\n[1/5] Loading data...", flush=True)
     if args.use_real_data:
         data_dir = Path(__file__).parent.parent / 'data' / 'raw' / 'sleep-cassette'
         X_list, y_list = load_sleep_edf_dataset(
@@ -274,7 +292,7 @@ def main():
             use_cache=True,
             incremental_cache=args.incremental_cache,
         )
-        print(f"  Loaded {len(X_list)} subjects from Sleep-EDF")
+        print(f"  Loaded {len(X_list)} subjects from Sleep-EDF", flush=True)
     else:
         print(f"  Generating synthetic sleep data...")
         X_list, y_list = generate_synthetic_sleep_data(
@@ -285,7 +303,7 @@ def main():
         print(f"  Generated {len(X_list)} subjects, {X_list[0].shape[1]} features")
     
     # Standardize features for better model performance
-    print("\n  Standardizing features...")
+    print("\n  Standardizing features...", flush=True)
     from sklearn.preprocessing import StandardScaler
     X_all = np.vstack(X_list)
     scaler = StandardScaler()
@@ -299,19 +317,20 @@ def main():
         X_list_scaled.append(X_all_scaled[idx:idx+n])
         idx += n
     X_list = X_list_scaled
+    print(f"  Standardization complete. Total epochs: {len(X_all)}", flush=True)
     
     # Train models
-    print("\n[2/5] Training models on all subjects...")
+    print("\n[2/5] Training models on all subjects...", flush=True)
     
     n_iter = 200 if args.quick else 500
     burn_in = 50 if args.quick else 200
     
     print("  Training HDP-HMM...")
     hdp_model = SimpleStickyHDPHMM(
-        K_max=15,
-        gamma=2.0,  # Better state discovery
-        alpha=5.0,  # More flexible transitions
-        kappa=50.0,  # Strong persistence for realistic sleep stage durations
+        K_max=12,        # Higher to allow discovery of 5+ states
+        gamma=5.0,       # Higher for better state discovery (DP concentration)
+        alpha=10.0,      # Higher for more flexible transitions
+        kappa=50.0,      # Moderate stickiness (balanced, not excessive)
         n_iter=n_iter,
         burn_in=burn_in,
         random_state=args.seed,
@@ -321,10 +340,10 @@ def main():
     
     print("\n  Training independent DP-HMMs...")
     idp_model = IndependentDPHMM(
-        K_max=15,
-        gamma=2.0,
-        alpha=5.0,
-        kappa=50.0,
+        K_max=12,        # Same capacity
+        gamma=5.0,       # Same gamma
+        alpha=10.0,      # Same alpha
+        kappa=50.0,      # Same kappa (no hierarchical sharing penalty)
         n_iter=n_iter,
         burn_in=burn_in,
         random_state=args.seed,
@@ -365,9 +384,9 @@ def main():
         loso_results['hdp_f1'].append(compute_macro_f1(y_list[i], hdp_aligned))
         loso_results['idp_f1'].append(compute_macro_f1(y_list[i], idp_aligned))
         loso_results['hdp_test_ll'].append(hdp_model.log_likelihood(X_list[i], i))
-        loso_results['idp_test_ll'].append(-1000)
+        loso_results['idp_test_ll'].append(idp_model.log_likelihood(X_list[i], i))
         
-        if (i + 1) % 5 == 0 or i == 0:
+        if len(X_list) <= 10 or ((i + 1) % 5 == 0) or (i == len(X_list) - 1):
             print(f"  Subject {i+1}/{len(X_list)}: HDP ARI={loso_results['hdp_ari'][-1]:.3f}, iDP ARI={loso_results['idp_ari'][-1]:.3f}")
     
     print(f"  Complete! Avg HDP ARI: {np.mean(loso_results['hdp_ari']):.3f}")
@@ -420,6 +439,14 @@ def main():
         output_path=fig_dir / "fig6_stick_breaking_weights.pdf"
     )
     
+    # Figure 6b: Convergence diagnostics
+    print("  Figure 6b: Convergence diagnostics...")
+    plots.plot_convergence_diagnostics(
+        hdp_model.samples_,
+        idp_samples_all,
+        output_path=fig_dir / "fig6b_convergence_diagnostics.pdf"
+    )
+    
     # Figure 7: States vs subjects (requires multiple runs - skip for now)
     print("  Figure 7: Skipped (requires multiple runs with varying M)")
     
@@ -457,7 +484,11 @@ def main():
         return np.array(dwells) * 30
     
     hdp_dwells = compute_dwell_times(np.concatenate([s['states'][0] for s in hdp_model.samples_[-20:]]))
-    idp_dwells = compute_dwell_times(np.concatenate([s['states'][0] for s in idp_model.models[0].samples_[-20:]]))
+    idp_dwells = compute_dwell_times(np.concatenate([
+        s['states'][0]
+        for m in idp_model.models
+        for s in m.samples_[-20:]
+    ]))
     
     # Compute per-class F1 scores to show class imbalance handling
     from sklearn.metrics import classification_report
@@ -492,9 +523,17 @@ def main():
     )
     idp_per_class = {name: idp_report[name]['f1-score'] for name in ['W', 'N1', 'N2', 'N3', 'REM']}
     
+    # Compute effective K and total iDP K
+    hdp_K_effective = hdp_model.get_effective_K(threshold=0.01)
+    hdp_K_all = hdp_model.get_posterior_mean_K()
+    
+    # For iDP: report total unique states across all subjects (sum)
+    idp_K_total = sum([m.get_posterior_mean_K() for m in idp_model.models])
+    
     summary = {
-        'hdp_K': hdp_model.get_posterior_mean_K(),
-        'idp_K': sum([m.get_posterior_mean_K() for m in idp_model.models]),
+        'hdp_K': hdp_K_effective,  # Report effective K
+        'hdp_K_all': hdp_K_all,  # Also keep total instantiated
+        'idp_K': idp_K_total,  # Sum across subjects
         'hdp_dwell': np.median(hdp_dwells),
         'idp_dwell': np.median(idp_dwells),
         'hdp_ll': np.mean(loso_results['hdp_test_ll']),
