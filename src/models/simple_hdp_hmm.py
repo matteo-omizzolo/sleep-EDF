@@ -265,18 +265,23 @@ class SimpleStickyHDPHMM:
             next_state = states[t+1]
             trans_prob = pi[:, next_state] * gamma[t]  # Vector of length K
             
-            # Handle numerical issues
+            # Handle numerical issues more robustly
             trans_prob = np.nan_to_num(trans_prob, nan=0.0, posinf=0.0, neginf=0.0)
-            trans_prob = np.maximum(trans_prob, 0)
+            trans_prob = np.maximum(trans_prob, 1e-100)  # Prevent complete zeros
             prob_sum = trans_prob.sum()
             
-            if prob_sum > 1e-10:
+            if prob_sum > 1e-50 and np.isfinite(prob_sum):
                 trans_prob = trans_prob / prob_sum
             else:
                 # Fallback to marginal if transition gives invalid probs
-                trans_prob = gamma[t]
-                trans_prob = np.maximum(trans_prob, 0)
-                trans_prob = trans_prob / (trans_prob.sum() + 1e-10)
+                trans_prob = gamma[t].copy()
+                trans_prob = np.nan_to_num(trans_prob, nan=0.0, posinf=0.0, neginf=0.0)
+                trans_prob = np.maximum(trans_prob, 1e-100)
+                trans_prob = trans_prob / (trans_prob.sum() + 1e-100)
+            
+            # Final safety check before sampling
+            if not np.all(np.isfinite(trans_prob)) or np.any(trans_prob < 0) or trans_prob.sum() < 1e-100:
+                trans_prob = np.ones(self.K_max) / self.K_max
             
             states[t] = self.rng.choice(self.K_max, p=trans_prob)
         

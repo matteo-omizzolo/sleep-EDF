@@ -129,7 +129,7 @@ class IndependentDPHMM:
             kwargs_copy = {k: v for k, v in self.kwargs.items() if k != 'kappa'}
             model = SimpleStickyHDPHMM(
                 K_max=self.K_max,
-                kappa=10.0,  # Reduced stickiness for independent models
+                kappa=self.kwargs.get('kappa', 15.0),  # Use same kappa as HDP for fair comparison
                 **kwargs_copy
             )
             model.fit([X])  # Single subject
