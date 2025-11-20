@@ -261,7 +261,7 @@ class SimpleStickyHDPHMM:
         return gamma, xi, log_likelihood
     
     def _sample_states(
-        self, X: np.ndarray, pi: np.ndarray, exploration_prob: float = 0.0
+        self, X: np.ndarray, pi: np.ndarray
     ) -> np.ndarray:
         """Sample state sequence using backward sampling.
         
@@ -269,9 +269,6 @@ class SimpleStickyHDPHMM:
         1. Sample z_T ~ p(z_T | X) = gamma_T
         2. Sample z_t ~ p(z_t | z_{t+1}, X_{1:t}) ∝ p(z_{t+1} | z_t) * p(z_t | X_{1:t})
                                                      = pi[z_t, z_{t+1}] * gamma_t[z_t]
-        
-        Args:
-            exploration_prob: Probability of uniform exploration (for discovering new states)
         """
         gamma, xi, _ = self._forward_backward(X, pi)
         T = len(X)
@@ -279,11 +276,6 @@ class SimpleStickyHDPHMM:
         
         # Sample last state from marginal posterior
         p_last = gamma[-1]
-        
-        # Add exploration: small probability of uniform sampling
-        if exploration_prob > 0:
-            p_last = (1 - exploration_prob) * p_last + exploration_prob / self.K_max
-        
         p_last = np.nan_to_num(p_last, nan=0.0, posinf=0.0, neginf=0.0)
         total = p_last.sum()
         if total > 1e-10:
@@ -296,44 +288,31 @@ class SimpleStickyHDPHMM:
         
         # Sample backward: p(z_t | z_{t+1}, X_{1:t}) ∝ pi[z_t, z_{t+1}] * gamma[t, z_t]
         for t in range(T-2, -1, -1):
-            # Conditional distribution: p(z_t = j | z_{t+1} = k, X_{1:t})
-            # Proportional to: p(z_{t+1} = k | z_t = j) * p(z_t = j | X_{1:t})
-            #                = pi[j, k] * gamma[t, j]
             next_state = states[t+1]
-            trans_prob = pi[:, next_state] * gamma[t]  # Vector of length K
+            trans_prob = pi[:, next_state] * gamma[t]
             
-            # Add exploration
-            if exploration_prob > 0:
-                trans_prob = (1 - exploration_prob) * trans_prob + exploration_prob / self.K_max
-            
-            # Handle numerical issues more robustly
+            # Handle numerical issues
             trans_prob = np.nan_to_num(trans_prob, nan=0.0, posinf=0.0, neginf=0.0)
-            trans_prob = np.maximum(trans_prob, 1e-100)  # Prevent complete zeros
+            trans_prob = np.maximum(trans_prob, 1e-100)
             prob_sum = trans_prob.sum()
             
             if prob_sum > 1e-50 and np.isfinite(prob_sum):
                 trans_prob = trans_prob / prob_sum
             else:
-                # Fallback to marginal if transition gives invalid probs
                 trans_prob = gamma[t].copy()
-                if exploration_prob > 0:
-                    trans_prob = (1 - exploration_prob) * trans_prob + exploration_prob / self.K_max
                 trans_prob = np.nan_to_num(trans_prob, nan=0.0, posinf=0.0, neginf=0.0)
                 trans_prob = np.maximum(trans_prob, 1e-100)
                 trans_prob = trans_prob / (trans_prob.sum() + 1e-100)
             
-            # Final safety check before sampling
             if not np.all(np.isfinite(trans_prob)) or np.any(trans_prob < 0):
                 trans_prob = np.ones(self.K_max) / self.K_max
             
-            # Ensure exact normalization for numpy's choice (requires sum exactly 1.0)
             prob_sum_final = trans_prob.sum()
             if abs(prob_sum_final - 1.0) > 1e-10:
                 trans_prob = trans_prob / prob_sum_final
             
-            # Clip to valid probability range
             trans_prob = np.clip(trans_prob, 0.0, 1.0)
-            trans_prob = trans_prob / trans_prob.sum()  # Final normalization
+            trans_prob = trans_prob / trans_prob.sum()
             
             states[t] = self.rng.choice(self.K_max, p=trans_prob)
         
@@ -437,12 +416,9 @@ class SimpleStickyHDPHMM:
             # Gradually reduce covariance inflation
             inflation_factor = 3.0 - 2.0 * progress  # 3.0 -> 1.0 smoothly
             
-            # Add exploration during burn-in to discover new states
-            exploration_prob = 0.05 * (1 - progress) if iter_idx < self.burn_in else 0.0  # 0.05 -> 0
-            
-            # E-step: Sample states with exploration
+            # E-step: Sample states
             for m in range(self.M):
-                states_list[m] = self._sample_states(X_list[m], self.pi_[m], exploration_prob=exploration_prob)
+                states_list[m] = self._sample_states(X_list[m], self.pi_[m])
             
             # M-step: Update parameters every iteration
             self._update_emissions(X_list, states_list, inflation_factor=inflation_factor)
