@@ -1,0 +1,16 @@
+
+| Model            | E[K]  | Median Dwell (s) | Test Log-Lik | ARI   | NMI   | Macro-F1 |
+|------------------|-------|------------------|--------------|-------|-------|----------|
+| iDP-HMM          |  35.1 |            210 |     -1096.4 | 0.431 | 0.516 |    0.288 |
+| HDP-HMM (sticky) |  12.5 |            120 |     -1095.5 | 0.608 | 0.687 |    0.835 |
+
+Note: HDP E[K] shows effective states (β>1%); K_all=19.8 with truncation.
+
+
+Per-Class F1 Scores (handling class imbalance):
+| Model            | Wake  | N1    | N2    | N3    | REM   |
+|------------------|-------|-------|-------|-------|-------|
+| HDP-HMM (sticky) | 0.000 | 0.000 | 0.025 | 0.007 | 0.000 |
+| iDP-HMM          | 0.000 | 0.000 | 0.000 | 0.000 | 0.161 |
+
+Note: Macro-F1 weights all classes equally (3% N1 = 68% Wake), addressing class imbalance.
