@@ -58,8 +58,9 @@ class SimpleStickyHDPHMM:
         self.d = X_all.shape[1]
         self.M = len(X_list)
         
-        # Use enough initial clusters to capture minority classes
-        n_init_clusters = min(8, self.K_max)
+        # Initialize ALL K_max clusters from data to allow exploration
+        # Use hierarchical clustering to get diverse initial states
+        n_init_clusters = min(self.K_max, len(X_all) // 100)  # At least 100 points per cluster
         
         # Initialize with k-means for faster, more balanced clustering
         from sklearn.cluster import KMeans
@@ -78,8 +79,15 @@ class SimpleStickyHDPHMM:
         )
         labels = kmeans.fit_predict(X_scaled)
         
-        # Global stick-breaking weights (with more mass on early components)
-        self.beta_ = self._sample_beta_informed(n_init_clusters)
+        # Global stick-breaking weights (initialize with DP prior, will be resampled)
+        v = self.rng.beta(1, self.gamma, size=self.K_max)
+        self.beta_ = np.zeros(self.K_max)
+        self.beta_[0] = v[0]
+        stick_left = 1 - v[0]
+        for k in range(1, self.K_max):
+            self.beta_[k] = v[k] * stick_left
+            stick_left *= (1 - v[k])
+        self.beta_ = self.beta_ / self.beta_.sum()
         
         # Transition matrices (M subjects)
         self.pi_ = np.zeros((self.M, self.K_max, self.K_max))
@@ -87,11 +95,14 @@ class SimpleStickyHDPHMM:
             for j in range(self.K_max):
                 self.pi_[m, j] = self._sample_pi_j(j)
         
-        # Emission parameters from k-means clustering
+        # Emission parameters: Initialize ALL states from data
         self.mu_ = np.zeros((self.K_max, self.d))
         self.Sigma_ = np.zeros((self.K_max, self.d, self.d))
         
         global_cov = np.cov(X_all.T)
+        global_mean = X_all.mean(axis=0)
+        
+        # Initialize first n_init_clusters from k-means
         for k in range(n_init_clusters):
             cluster_mask = labels == k
             n_k = cluster_mask.sum()
@@ -101,17 +112,21 @@ class SimpleStickyHDPHMM:
                 # Regularize with global covariance
                 self.Sigma_[k] = 0.8 * cluster_cov + 0.2 * global_cov + 0.1 * np.eye(self.d)
             else:
-                self.mu_[k] = X_all.mean(axis=0) + self.rng.randn(self.d) * 0.3
+                self.mu_[k] = global_mean + self.rng.randn(self.d) * 0.3
                 self.Sigma_[k] = global_cov + 0.1 * np.eye(self.d)
         
-        # Initialize remaining states with high variance
+        # Initialize remaining states by sampling from data distribution
+        # This allows them to compete during inference
         for k in range(n_init_clusters, self.K_max):
-            self.mu_[k] = X_all.mean(axis=0) + self.rng.randn(self.d) * 0.5
-            self.Sigma_[k] = global_cov + 1.0 * np.eye(self.d)
+            # Sample a random data point and add noise
+            idx = self.rng.choice(len(X_all))
+            self.mu_[k] = X_all[idx] + self.rng.randn(self.d) * 0.5 * np.sqrt(np.diag(global_cov))
+            # Use inflated covariance to allow flexibility
+            self.Sigma_[k] = global_cov * 2.0 + 0.5 * np.eye(self.d)
         
         # Initialize duration means (in units of 30-second epochs)
         # Typical sleep stage durations: 1-20 minutes = 2-40 epochs
-        self.duration_means_ = np.random.gamma(5, 3, size=self.K_max)  # Mean ~15 epochs
+        self.duration_means_ = self.rng.gamma(5, 3, size=self.K_max)  # Mean ~15 epochs
     
     def _sample_beta(self) -> np.ndarray:
         """Sample global stick-breaking weights using state counts."""
@@ -246,7 +261,7 @@ class SimpleStickyHDPHMM:
         return gamma, xi, log_likelihood
     
     def _sample_states(
-        self, X: np.ndarray, pi: np.ndarray
+        self, X: np.ndarray, pi: np.ndarray, exploration_prob: float = 0.0
     ) -> np.ndarray:
         """Sample state sequence using backward sampling.
         
@@ -254,6 +269,9 @@ class SimpleStickyHDPHMM:
         1. Sample z_T ~ p(z_T | X) = gamma_T
         2. Sample z_t ~ p(z_t | z_{t+1}, X_{1:t}) ∝ p(z_{t+1} | z_t) * p(z_t | X_{1:t})
                                                      = pi[z_t, z_{t+1}] * gamma_t[z_t]
+        
+        Args:
+            exploration_prob: Probability of uniform exploration (for discovering new states)
         """
         gamma, xi, _ = self._forward_backward(X, pi)
         T = len(X)
@@ -261,6 +279,11 @@ class SimpleStickyHDPHMM:
         
         # Sample last state from marginal posterior
         p_last = gamma[-1]
+        
+        # Add exploration: small probability of uniform sampling
+        if exploration_prob > 0:
+            p_last = (1 - exploration_prob) * p_last + exploration_prob / self.K_max
+        
         p_last = np.nan_to_num(p_last, nan=0.0, posinf=0.0, neginf=0.0)
         total = p_last.sum()
         if total > 1e-10:
@@ -279,6 +302,10 @@ class SimpleStickyHDPHMM:
             next_state = states[t+1]
             trans_prob = pi[:, next_state] * gamma[t]  # Vector of length K
             
+            # Add exploration
+            if exploration_prob > 0:
+                trans_prob = (1 - exploration_prob) * trans_prob + exploration_prob / self.K_max
+            
             # Handle numerical issues more robustly
             trans_prob = np.nan_to_num(trans_prob, nan=0.0, posinf=0.0, neginf=0.0)
             trans_prob = np.maximum(trans_prob, 1e-100)  # Prevent complete zeros
@@ -289,6 +316,8 @@ class SimpleStickyHDPHMM:
             else:
                 # Fallback to marginal if transition gives invalid probs
                 trans_prob = gamma[t].copy()
+                if exploration_prob > 0:
+                    trans_prob = (1 - exploration_prob) * trans_prob + exploration_prob / self.K_max
                 trans_prob = np.nan_to_num(trans_prob, nan=0.0, posinf=0.0, neginf=0.0)
                 trans_prob = np.maximum(trans_prob, 1e-100)
                 trans_prob = trans_prob / (trans_prob.sum() + 1e-100)
@@ -408,9 +437,12 @@ class SimpleStickyHDPHMM:
             # Gradually reduce covariance inflation
             inflation_factor = 3.0 - 2.0 * progress  # 3.0 -> 1.0 smoothly
             
-            # E-step: Sample states
+            # Add exploration during burn-in to discover new states
+            exploration_prob = 0.05 * (1 - progress) if iter_idx < self.burn_in else 0.0  # 0.05 -> 0
+            
+            # E-step: Sample states with exploration
             for m in range(self.M):
-                states_list[m] = self._sample_states(X_list[m], self.pi_[m])
+                states_list[m] = self._sample_states(X_list[m], self.pi_[m], exploration_prob=exploration_prob)
             
             # M-step: Update parameters every iteration
             self._update_emissions(X_list, states_list, inflation_factor=inflation_factor)
