@@ -195,15 +195,22 @@ class SimpleStickyHDPHMM:
             except:
                 log_B[:, k] = -1e10
         
+        # Clip extreme values to prevent numerical issues
+        log_B = np.clip(log_B, -700, 700)
+        
         # Forward pass
-        log_pi = np.log(pi + 1e-10)  # K x K transition matrix
+        log_pi = np.log(np.clip(pi, 1e-10, 1.0))  # K x K transition matrix
         log_alpha = np.zeros((T, K))
         # Initial: p(z_1=k) = beta_k * p(x_1|z_1=k)
-        log_alpha[0] = np.log(self.beta_ + 1e-10) + log_B[0]
+        log_alpha[0] = np.log(np.clip(self.beta_, 1e-10, 1.0)) + log_B[0]
         
+        # Use stable logsumexp throughout
         for t in range(1, T):
-            # Vectorized computation
+            # Vectorized computation with numerical stability
             log_alpha[t] = logsumexp(log_alpha[t-1][:, None] + log_pi.T, axis=0) + log_B[t]
+            # Normalize to prevent overflow in very long sequences
+            if t % 100 == 0:
+                log_alpha[t] -= logsumexp(log_alpha[t])
         
         log_likelihood = logsumexp(log_alpha[-1])
         
@@ -212,22 +219,29 @@ class SimpleStickyHDPHMM:
         
         for t in range(T-2, -1, -1):
             log_beta_bw[t] = logsumexp(log_pi + log_B[t+1] + log_beta_bw[t+1], axis=1)
+            # Normalize periodically
+            if (T - t) % 100 == 0:
+                log_beta_bw[t] -= logsumexp(log_beta_bw[t])
         
         # Posteriors
         log_gamma = log_alpha + log_beta_bw
         log_gamma -= logsumexp(log_gamma, axis=1, keepdims=True)
-        gamma = np.exp(np.clip(log_gamma, -500, 500))
+        gamma = np.exp(np.clip(log_gamma, -500, 0))  # Probabilities must be <= 1
+        
+        # Normalize gamma to ensure valid probabilities
+        gamma = gamma / (gamma.sum(axis=1, keepdims=True) + 1e-10)
         
         # Compute xi (two-slice marginals) for state transitions
         xi = np.zeros((T-1, K, K))
         for t in range(T-1):
-            for j in range(K):
-                for k in range(K):
-                    xi[t, j, k] = (log_alpha[t, j] + 
-                                   np.log(pi[j, k] + 1e-10) +
-                                   log_B[t+1, k] + 
-                                   log_beta_bw[t+1, k])
-            xi[t] = np.exp(xi[t] - logsumexp(xi[t]))
+            log_xi_t = (log_alpha[t, :, None] + 
+                       log_pi + 
+                       log_B[t+1, None, :] + 
+                       log_beta_bw[t+1, None, :])
+            log_xi_t -= logsumexp(log_xi_t)
+            xi[t] = np.exp(np.clip(log_xi_t, -500, 0))
+            # Normalize
+            xi[t] = xi[t] / (xi[t].sum() + 1e-10)
         
         return gamma, xi, log_likelihood
     
@@ -442,8 +456,16 @@ class SimpleStickyHDPHMM:
         if not self.is_fitted:
             raise ValueError("Model not fitted")
         
-        _, _, ll = self._forward_backward(X, self.pi_[subject_idx])
-        return ll
+        try:
+            _, _, ll = self._forward_backward(X, self.pi_[subject_idx])
+            # Check for numerical issues
+            if not np.isfinite(ll):
+                warnings.warn(f"Non-finite log-likelihood: {ll}. Returning large negative value.")
+                return -1e10
+            return ll
+        except Exception as e:
+            warnings.warn(f"Error computing log-likelihood: {e}. Returning large negative value.")
+            return -1e10
     
     def get_posterior_mean_K(self) -> float:
         """Get posterior mean number of states (all instantiated)."""

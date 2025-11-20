@@ -330,8 +330,9 @@ def main():
     print("\n[2/5] Training models on all subjects...", flush=True)
     
     # Increased iterations for better posterior inference (more samples like HDP paper)
-    n_iter = 200 if args.quick else 1000  # 800 post-burnin samples
-    burn_in = 50 if args.quick else 200
+    # NOTE: For faster experimentation, reduce to 200 iterations (50 burn-in)
+    n_iter = 200 if args.quick else 500  # Reduced from 1000 for faster runs
+    burn_in = 50 if args.quick else 100   # Reduced from 200
     
     # Check for HDP checkpoint
     hdp_checkpoint_path = os.path.join(args.output, 'hdp_model_checkpoint.pkl')
@@ -343,7 +344,7 @@ def main():
     else:
         print("  Training HDP-HMM...")
         hdp_model = SimpleStickyHDPHMM(
-            K_max=12,        # Higher to allow discovery of 5+ states
+            K_max=20,        # Increased for better state discovery (was 12)
             gamma=5.0,       # Higher for better state discovery (DP concentration)
             alpha=10.0,      # Higher for more flexible transitions
             kappa=15.0,      # Reduced to prevent post-burnin collapse (was 50)
@@ -362,7 +363,7 @@ def main():
     
     print("\n  Training independent DP-HMMs...")
     idp_model = IndependentDPHMM(
-        K_max=12,        # Same capacity
+        K_max=20,        # Same capacity as HDP
         gamma=5.0,       # Same gamma
         alpha=10.0,      # Same alpha
         kappa=15.0,      # Matched to HDP-HMM (was 50)
